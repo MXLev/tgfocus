@@ -1,13 +1,48 @@
 import AppKit
 import SwiftUI
 import UserNotifications
+import Darwin
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
         MainActor.assumeIsolated {
-            if AppModel.shared.startupAllowed { AppModel.shared.updateFocusAutomation() }
+            if AppModel.isStartupSmokeTest {
+                Task { @MainActor in await self.runStartupSmokeTest() }
+            } else if AppModel.shared.startupAllowed {
+                AppModel.shared.updateFocusAutomation()
+            }
         }
+    }
+
+    @MainActor private func runStartupSmokeTest() async {
+        let model = AppModel.shared
+        let deadline = Date().addingTimeInterval(15)
+        while !model.helperReady && Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard model.helperReady else {
+            fputs("App startup smoke test: worker did not become ready\n", stderr)
+            model.shutdown()
+            exit(1)
+        }
+        let settings = SettingsWindowController.shared
+        settings.show { NSHostingController(rootView: RootView().environmentObject(model)) }
+        guard settings.window?.isVisible == true else {
+            fputs("App startup smoke test: settings window did not open\n", stderr)
+            model.shutdown()
+            exit(1)
+        }
+        settings.window?.close()
+        settings.show { NSHostingController(rootView: RootView().environmentObject(model)) }
+        guard settings.window?.isVisible == true else {
+            fputs("App startup smoke test: settings window did not reopen\n", stderr)
+            model.shutdown()
+            exit(1)
+        }
+        print("Signed app startup: worker ready, settings opened and reopened OK")
+        fflush(stdout)
+        NSApp.terminate(nil)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationWillTerminate(_ notification: Notification) {

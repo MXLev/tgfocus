@@ -210,6 +210,9 @@ final class LineDecoder: @unchecked Sendable {
 @MainActor
 final class AppModel: ObservableObject {
     static let shared = AppModel()
+    nonisolated static var isStartupSmokeTest: Bool {
+        ProcessInfo.processInfo.arguments.contains("--startup-smoke-test")
+    }
     @Published var config = FilterConfig()
     @Published var credentials = Credentials()
     @Published var state = "disconnected"
@@ -262,6 +265,12 @@ final class AppModel: ObservableObject {
             return
         }
         startupAllowed = true
+        if Self.isStartupSmokeTest {
+            // Exercise the actual app and worker without opening a user's
+            // Keychain, connecting an account, or prompting for OS permissions.
+            startHelper()
+            return
+        }
         do {
             let root = try StartupGuard.dataDirectory()
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,

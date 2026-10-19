@@ -47,4 +47,5 @@ PY
 test -x "$app/Contents/MacOS/TelegramFocus"
 python3 "$repo_root/source/tests/smoke_worker.py" \
   "$app/Contents/Resources/helper/focus-worker"
+python3 "$repo_root/source/tests/smoke_app.py" "$app"
 echo "DMG checksum, contents, app copy, signature, and installed worker OK"
