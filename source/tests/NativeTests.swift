@@ -52,6 +52,11 @@ struct NativeTests {
         model.deliverMessage(["allowed": true, "title": "test"], focus: .inactive)
         model.deliverMessage(["allowed": true, "title": "test"], focus: .unavailable)
         precondition(model.passed == 0 && model.suppressed == 3)
+        model.receive(["type": "message", "allowed": false, "title": "test", "reason": "rule rejected"])
+        precondition(model.suppressed == 4 && model.activities.first?.reason == "rule rejected")
+        model.setFilterEnabled(false)
+        model.receive(["type": "message", "allowed": true, "title": "test"])
+        precondition(model.passed == 0 && model.suppressed == 4)
         // No configured/active Focus Filter must restore the inactive default.
         precondition(TGFocusFilter().useFilter == false)
         let lockDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

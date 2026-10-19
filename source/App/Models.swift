@@ -532,6 +532,11 @@ final class AppModel: ObservableObject {
             simulationReason = object["reason"] as? String ?? ""
         case "message":
             guard config.enabled else { return }
+            // Rejected rules cannot deliver a banner; manual mode needs no Focus query.
+            guard config.onlyDuringFocus, object["allowed"] as? Bool == true else {
+                deliverMessage(object, focus: focusFilterState)
+                return
+            }
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 let focus = await self.refreshFocusStatus()
