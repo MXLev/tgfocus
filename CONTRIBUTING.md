@@ -59,3 +59,9 @@ The CI job validates the DMG automatically, but only this test on your Mac valid
 4. Keep the version in `source/build.py` consistent with the release tag. Push a version tag to create a draft release, then review the artifacts and notes before publishing it.
 
 For security-sensitive reports, read [SECURITY.md](SECURITY.md). Keep discussion respectful and focused on the work.
+
+### Idle resource diagnostic
+
+The installed-app smoke test closes settings, disables the master filter, and keeps the app and worker alive for 25 seconds without a Telegram account. It reports summed resident memory, memory change, and average CPU time for the app process tree after startup warmup as a GitHub Actions notice. This short disconnected sample does not prove the absence of long-term leaks or represent an active Telegram account.
+
+With the master switch off, Focus polling stops and the worker skips message/entity/mute processing and IPC events. The Telegram connection stays available for fast resumption; its keepalive/reconnect traffic remains. When automatic mode waits for Focus, the worker skips message processing while the app checks the native Focus Filter every two seconds. Decision history and worker caches are bounded; the IPC decoder drops frames over 1 MiB and recovers at the next newline.

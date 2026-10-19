@@ -77,6 +77,11 @@ struct NativeTests {
         precondition(messages[1]["type"] as? String == "ready")
         precondition(decoder.consume(Data("broken\n".utf8)).isEmpty)
         precondition(decoder.consume(Data("{\"type\":\"ok\"}\n".utf8)).count == 1)
+        let oversizedDecoder = LineDecoder()
+        precondition(oversizedDecoder.consume(Data(repeating: 65, count: 1_048_576)).isEmpty)
+        precondition(oversizedDecoder.consume(Data("overflow".utf8)).isEmpty)
+        let recovered = oversizedDecoder.consume(Data("\n{\"type\":\"ok\"}\n".utf8))
+        precondition(recovered.count == 1 && recovered[0]["type"] as? String == "ok")
         var config = FilterConfig()
         config.people = [Person(id: "42", name: "Важный")]
         config.chats = [ChatRule(id: "-100123", name: "Учёба")]

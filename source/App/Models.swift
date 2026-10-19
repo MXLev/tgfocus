@@ -191,16 +191,34 @@ struct Activity: Identifiable {
 
 final class LineDecoder: @unchecked Sendable {
     private var pending = Data()
+    private var discarding = false
+    private let maximumFrameBytes = 1_048_576
     private let lock = NSLock()
     func consume(_ data: Data) -> [[String: Any]] {
         lock.lock()
         defer { lock.unlock() }
-        pending.append(data)
         var objects: [[String: Any]] = []
-        while let range = pending.range(of: Data([10])) {
-            let line = pending.subdata(in: pending.startIndex..<range.lowerBound)
-            pending.removeSubrange(pending.startIndex..<range.upperBound)
-            if let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any] { objects.append(object) }
+        var cursor = data.startIndex
+        while cursor < data.endIndex {
+            let newline = data[cursor...].firstIndex(of: 10)
+            let end = newline ?? data.endIndex
+            let fragment = data[cursor..<end]
+            if !discarding {
+                if pending.count + fragment.count <= maximumFrameBytes {
+                    pending.append(contentsOf: fragment)
+                } else {
+                    pending.removeAll(keepingCapacity: true)
+                    discarding = true
+                }
+            }
+            guard let newline else { break }
+            if !discarding,
+               let object = try? JSONSerialization.jsonObject(with: pending) as? [String: Any] {
+                objects.append(object)
+            }
+            pending.removeAll(keepingCapacity: true)
+            discarding = false
+            cursor = data.index(after: newline)
         }
         return objects
     }
@@ -258,6 +276,7 @@ final class AppModel: ObservableObject {
     }
     func setFilterEnabled(_ enabled: Bool) {
         config.enabled = enabled
+        updateFocusAutomation()
         saveConfig()
     }
     func setAutomaticMode(_ enabled: Bool) {
@@ -302,16 +321,18 @@ final class AppModel: ObservableObject {
     }
 
     @discardableResult func refreshFocusStatus() async -> FocusFilterState {
-        guard config.onlyDuringFocus else {
-            focusStatusText = "Ручной режим"
+        guard config.enabled, config.onlyDuringFocus else {
+            focusStatusText = config.enabled ? "Ручной режим" : "Фильтр выключен"
             return .inactive
         }
         focusReadGeneration += 1
         let generation = focusReadGeneration
         let result = await FocusAutomation.read()
         // Only the newest query updates presentation. Each delivery uses its own result.
-        guard config.onlyDuringFocus, generation == focusReadGeneration else { return result }
+        guard config.enabled, config.onlyDuringFocus, generation == focusReadGeneration else { return result }
+        let changed = focusFilterState != result
         focusFilterState = result
+        if changed { syncWorkerConfig() }
         switch result {
         case .active:
             focusStatusText = "Фильтр фокусирования macOS активен"
@@ -328,14 +349,14 @@ final class AppModel: ObservableObject {
         focusPollingTask = nil
         focusReadGeneration += 1
         focusFilterState = .unavailable
-        guard config.onlyDuringFocus, !Self.isStartupSmokeTest else {
-            focusStatusText = config.onlyDuringFocus ? "Ожидание фокусирования" : "Ручной режим"
+        guard config.enabled, config.onlyDuringFocus, !Self.isStartupSmokeTest else {
+            focusStatusText = !config.enabled ? "Фильтр выключен" : (config.onlyDuringFocus ? "Ожидание фокусирования" : "Ручной режим")
             return
         }
         focusPollingTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshFocusStatus()
-                do { try await Task.sleep(for: .seconds(1)) }
+                do { try await Task.sleep(for: .seconds(2)) }
                 catch { return }
             }
         }
@@ -400,12 +421,21 @@ final class AppModel: ObservableObject {
                 try data.write(to: configURL, options: .atomic)
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
             }
-            if helperReady, let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                send(["command": "config", "config": object])
-            }
+            syncWorkerConfig()
         } catch { errorText = "Не удалось сохранить правила: \(error.localizedDescription)" }
         simulationAllowed = nil
         simulationReason = ""
+    }
+
+    private func syncWorkerConfig() {
+        guard helperReady else { return }
+        do {
+            let data = try JSONEncoder().encode(config)
+            var object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+            // Runtime processing state is separate from saved rules and simulation.
+            object["processingEnabled"] = effectiveFilterEnabled
+            send(["command": "config", "config": object])
+        } catch { errorText = "Не удалось передать настройки фильтра." }
     }
 
     func connect() {
@@ -501,6 +531,7 @@ final class AppModel: ObservableObject {
             simulationAllowed = object["allowed"] as? Bool ?? false
             simulationReason = object["reason"] as? String ?? ""
         case "message":
+            guard config.enabled else { return }
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 let focus = await self.refreshFocusStatus()

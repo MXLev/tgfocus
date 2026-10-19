@@ -46,6 +46,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             model.shutdown()
             exit(1)
         }
+        if ProcessInfo.processInfo.arguments.contains("--measure-idle") {
+            model.setFilterEnabled(false)
+            settings.window?.close()
+            print("Idle resource measurement ready")
+            fflush(stdout)
+            try? await Task.sleep(for: .seconds(25))
+        }
         print("Signed app startup: worker ready, settings opened and reopened OK")
         fflush(stdout)
         NSApp.terminate(nil)

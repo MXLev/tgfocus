@@ -120,6 +120,30 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         fields.update(changes)
         return SimpleNamespace(**fields)
 
+    async def test_disabled_filter_skips_all_event_work(self):
+        for config in [dict(BASE, enabled=False), dict(BASE, processingEnabled=False)]:
+            self.worker.config = config
+            await self.worker.on_message(object())  # Even reading event fields would fail.
+        self.worker.is_chat_muted.assert_not_awaited()
+        self.assertEqual(self.messages(), [])
+        self.assertEqual(len(self.worker.seen), 0)
+
+    async def test_pause_during_mute_request_does_not_emit_message(self):
+        async def pause(*args):
+            self.worker.config["processingEnabled"] = False
+            return False
+        self.worker.is_chat_muted.side_effect = pause
+        await self.worker.on_message(self.event())
+        self.assertEqual(self.messages(), [])
+
+    async def test_resuming_runtime_processing_uses_current_rules(self):
+        self.worker.config["processingEnabled"] = False
+        await self.worker.on_message(self.event())
+        self.worker.config["processingEnabled"] = True
+        await self.worker.on_message(self.event())
+        self.assertEqual(len(self.messages()), 1)
+        self.assertTrue(self.messages()[0]["allowed"])
+
     async def test_message_event_and_duplicate(self):
         event = self.event()
         await self.worker.on_message(event)

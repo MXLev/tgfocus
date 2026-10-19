@@ -228,7 +228,14 @@ class Worker:
                 return True
         return False
 
+    def processing_enabled(self):
+        return self.config.get("enabled", True) and self.config.get("processingEnabled", True)
+
     async def on_message(self, event):
+        # Keep the connection warm, but do not resolve entities, query mute settings,
+        # classify messages, or send IPC events while delivery is paused.
+        if not self.processing_enabled():
+            return
         try:
             key = (event.chat_id, event.id)
             if key in self.seen:
@@ -291,6 +298,8 @@ class Worker:
                 muted = await self.is_chat_muted(event, kind)
                 msg.update(muted=muted is True, muteUnknown=muted is None)
                 result = decide(msg, self.config)
+            if not self.processing_enabled():
+                return  # The user may pause while a Telegram request is in flight.
             # Only forwarded messages include their body; suppressed messages leave no text in the UI.
             emit("message", allowed=result.allowed, reason=result.reason, title=title,
                  sender=sender_name, kind=kind, text=display[:600] if result.allowed else "",
