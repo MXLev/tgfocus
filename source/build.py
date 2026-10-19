@@ -95,10 +95,6 @@ def build(args):
     shutil.copy2(PRODUCT / "README.md", resources / "README.md")
     run(python, SOURCE / "collect_licenses.py", resources / "Licenses")
     run("codesign", "--force", "--deep", "--sign", "-", "--identifier", "local.mxlev.TelegramFocus", staged)
-    # Apply the notification entitlement only to the outer app, not to Python's
-    # nested binaries and libraries already signed by the preceding command.
-    run("codesign", "--force", "--sign", "-", "--identifier", "local.mxlev.TelegramFocus",
-        "--entitlements", SOURCE / "App/Entitlements.plist", staged)
     run("codesign", "--verify", "--deep", "--strict", staged)
     replace_app_under_lock(staged, app, lambda candidate: run("codesign", "--verify", "--deep", "--strict", candidate))
     shutil.rmtree(staged)

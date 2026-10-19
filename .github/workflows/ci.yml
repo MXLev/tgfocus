@@ -21,7 +21,7 @@ jobs:
       - run: python -m pip install Telethon==1.45.0
       - run: python -m unittest discover -s source/tests -p 'test_*.py' -v
   macos-dmg:
-    name: macOS app and DMG
+    name: macOS 15 build and DMG
     runs-on: macos-15
     timeout-minutes: 30
     steps:
@@ -43,3 +43,29 @@ jobs:
             dist/TGFocus-unsigned-arm64.dmg
             dist/TGFocus-unsigned-arm64.dmg.sha256
           if-no-files-found: error
+  macos26-startup:
+    name: macOS 26 installed app
+    needs: macos-dmg
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          name: TGFocus-test-DMG
+          path: dist
+      - run: bash source/tests/smoke_dmg.sh
+  macos-checks:
+    name: macOS app and DMG
+    if: always()
+    needs: [macos-dmg, macos26-startup]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require both macOS versions
+        env:
+          BUILD_RESULT: ${{ needs.macos-dmg.result }}
+          MACOS26_RESULT: ${{ needs.macos26-startup.result }}
+        run: test "$BUILD_RESULT" = success && test "$MACOS26_RESULT" = success

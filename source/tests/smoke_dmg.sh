@@ -41,8 +41,10 @@ python3 - "$test_root/entitlements.plist" <<'PY'
 import plistlib
 import sys
 with open(sys.argv[1], 'rb') as stream:
-    assert plistlib.load(stream).get('com.apple.developer.usernotifications.time-sensitive') is True
-print('App declares the time-sensitive notification entitlement')
+    data = stream.read()
+    entitlements = plistlib.loads(data) if data.strip() else {}
+    assert entitlements.get('com.apple.developer.usernotifications.time-sensitive') is not True
+print('Ad-hoc app does not request the time-sensitive entitlement')
 PY
 test -x "$app/Contents/MacOS/TelegramFocus"
 python3 "$repo_root/source/tests/smoke_worker.py" \

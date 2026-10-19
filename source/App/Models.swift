@@ -213,6 +213,8 @@ final class AppModel: ObservableObject {
     nonisolated static var isStartupSmokeTest: Bool {
         ProcessInfo.processInfo.arguments.contains("--startup-smoke-test")
     }
+    // The distributed ad-hoc build cannot request the restricted notification entitlement.
+    nonisolated static let automaticModeSupported = false
     @Published var config = FilterConfig()
     @Published var credentials = Credentials()
     @Published var state = "disconnected"
@@ -297,6 +299,11 @@ final class AppModel: ObservableObject {
             focusStatusText = "Автоматический режим выключен"
             return
         }
+        guard Self.automaticModeSupported else {
+            focusSilencesApp = nil
+            focusStatusText = "Автоматический режим недоступен в этой сборке: нет системного права на неотложные уведомления. Перейдите в ручной режим, чтобы включить фильтр."
+            return
+        }
         let center = INFocusStatusCenter.default
         guard center.authorizationStatus == .authorized else {
             focusSilencesApp = nil
@@ -318,7 +325,7 @@ final class AppModel: ObservableObject {
         focusPollingTask?.cancel()
         focusPollingTask = nil
         refreshFocusStatus()
-        guard config.onlyDuringFocus else { return }
+        guard config.onlyDuringFocus && Self.automaticModeSupported else { return }
         let center = INFocusStatusCenter.default
         if requestAccess && center.authorizationStatus == .notDetermined {
             center.requestAuthorization { [weak self] _ in
@@ -516,7 +523,7 @@ final class AppModel: ObservableObject {
 
     func refreshNotificationStatus() async {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
-        timeSensitiveAllowed = settings.timeSensitiveSetting == .enabled
+        timeSensitiveAllowed = Self.automaticModeSupported && settings.timeSensitiveSetting == .enabled
         notificationsAllowed = [.authorized, .provisional].contains(settings.authorizationStatus)
         switch settings.authorizationStatus {
         case .authorized: notificationStatus = "Разрешены"
@@ -536,7 +543,7 @@ final class AppModel: ObservableObject {
                 await refreshNotificationStatus()
                 if allowed && test {
                     notify(title: "Telegram Focus", subtitle: "Проверка уведомлений",
-                        body: "Проверка доставки. Для авто-режима разреши неотложные уведомления и не добавляй TGFocus в разрешённые приложения фокусирования.",
+                        body: "Проверка доставки. В ручном режиме разреши TGFocus в выбранном фокусировании, заглуши обычный Telegram и выключай фильтр TGFocus вне фокусирования.",
                         url: "", id: UUID().uuidString)
                 } else if !allowed {
                     errorText = "Разреши уведомления Telegram Focus в Системных настройках → Уведомления."
@@ -558,7 +565,7 @@ final class AppModel: ObservableObject {
         content.subtitle = subtitle
         content.body = body
         if config.playSound { content.sound = .default }
-        content.interruptionLevel = Self.notificationLevel(automatic: config.onlyDuringFocus)
+        content.interruptionLevel = Self.notificationLevel(automatic: Self.automaticModeSupported && config.onlyDuringFocus)
         content.userInfo = ["url": url]
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil)) { [weak self] error in
             if error != nil {

@@ -11,6 +11,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 Task { @MainActor in await self.runStartupSmokeTest() }
             } else if AppModel.shared.startupAllowed {
                 AppModel.shared.updateFocusAutomation()
+                if AppModel.shared.config.onlyDuringFocus && !AppModel.automaticModeSupported {
+                    SettingsWindowController.shared.show {
+                        NSHostingController(rootView: RootView().environmentObject(AppModel.shared))
+                    }
+                }
             }
         }
     }
