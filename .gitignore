@@ -21,3 +21,8 @@ dist/
 *.log
 *.key
 *.pem
+*.p12
+*.pfx
+*.p8
+*.mobileprovision
+*.provisionprofile

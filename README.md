@@ -111,6 +111,8 @@ python3 -m venv .venv
 
 Проект создан для MXLev при помощи OpenAI Codex: интерфейс, фильтр, связка компонентов и проверки написаны в ходе разработки. Для протокола Telegram используется [Telethon](https://github.com/LonamiWebs/Telethon), для упаковки — [PyInstaller](https://pyinstaller.org/). Это не официальный клиент Telegram. Лицензии сторонних компонентов включаются в собранное приложение.
 
+Условия подписи Apple и текущие ограничения Focus Filters: [SIGNING.ru.md](SIGNING.ru.md).
+
 ## Участие в проекте
 
 Ошибки, предложения и pull request приветствуются на русском и английском. См. [CONTRIBUTING.md](CONTRIBUTING.md) для запуска проверок и процесса релизов, [SECURITY.md](SECURITY.md) для сообщений об уязвимостях. Pull request проверяются Python-тестами и сборкой/проверкой DMG на macOS до слияния. Ручная проверка первого запуска остаётся отдельным шагом перед публикацией.
