@@ -31,6 +31,8 @@ jobs:
           python-version: '3.13'
       - name: Check build platform
         run: test "$(uname -m)" = arm64
+      - name: Install DMG packaging tools
+        run: brew install coreutils
       - run: python source/build.py
       - run: bash source/package_dmg.sh
       - run: bash source/tests/smoke_dmg.sh

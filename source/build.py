@@ -33,7 +33,8 @@ def main():
     python = venv / "bin/python"
     if not python.exists():
         run(sys.executable, "-m", "venv", venv)
-        run(python, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "-r", SOURCE / "requirements-build.txt")
+    # Reused environments must pick up new and changed build requirements too.
+    run(python, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "-r", SOURCE / "requirements-build.txt")
     run(python, "-m", "unittest", "discover", "-s", SOURCE / "tests", "-p", "test_*.py")
     swift = args.swift_binary.resolve() if args.swift_binary else BUILD / "TelegramFocus"
     env = dict(os.environ, PYINSTALLER_CONFIG_DIR=str(BUILD / "pyinstaller-cache"))

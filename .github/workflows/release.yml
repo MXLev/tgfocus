@@ -21,6 +21,8 @@ jobs:
           python-version: '3.13'
       - name: Check build platform
         run: test "$(uname -m)" = arm64
+      - name: Install DMG packaging tools
+        run: brew install coreutils
       - name: Build app and run Python, native, and worker checks
         run: python source/build.py
       - name: Package and verify unsigned DMG

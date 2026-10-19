@@ -53,6 +53,8 @@ python3.13 source/build.py
 
 ### Подготовка DMG для релиза
 
+Только для машины сборки: установите [Homebrew](https://brew.sh/) и выполните `brew install coreutils`. Упаковщик использует GNU `sync` из coreutils; штатная утилита macOS не поддерживает нужные параметры. Пользователям готового DMG эти инструменты не нужны. При повторной сборке `build.py` обновляет зависимости существующего Python-окружения.
+
 После сборки приложения на Apple Silicon Mac выполните `bash source/package_dmg.sh`. Образ и файл SHA-256 появятся в `dist/`. Окно образа показывает приложение слева, Applications справа и стрелку между ними; для установки перетащите приложение в Applications. Инструкция также включена в образ.
 
 Для проверки до релиза откройте pull request: после успешного **CI → macOS app and DMG** скачайте артефакт **TGFocus-test-DMG** со страницы запуска Actions, распакуйте ZIP и откройте DMG на своём Mac. Python и Xcode для такой проверки не нужны. Подробные шаги: [CONTRIBUTING.md](CONTRIBUTING.md#get-a-test-installer-without-installing-developer-tools).

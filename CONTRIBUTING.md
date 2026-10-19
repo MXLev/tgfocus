@@ -14,10 +14,11 @@ python3.13 -m venv .venv
 .venv/bin/python -m unittest discover -s source/tests -p 'test_*.py' -v
 ```
 
-Building the native app requires an Apple Silicon Mac, macOS 14+, Python 3.13, and Xcode Command Line Tools:
+Building the native app requires an Apple Silicon Mac, macOS 14+, Python 3.13, and Xcode Command Line Tools. To package a DMG, also install [Homebrew](https://brew.sh/) and GNU coreutils. These are build tools, not requirements for users installing the DMG:
 
 ```sh
 python3.13 source/build.py
+brew install coreutils
 bash source/package_dmg.sh
 bash source/tests/smoke_dmg.sh
 ```

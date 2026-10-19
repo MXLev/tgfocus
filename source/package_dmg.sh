@@ -23,10 +23,26 @@ if [[ ! -x "$python" ]] || ! "$python" -c 'import dmgbuild' >/dev/null 2>&1; the
   echo "  source/.build/venv/bin/python -m pip install -r source/requirements-build.txt" >&2
   exit 1
 fi
+# dmgbuild invokes `sync --file-system`, which the macOS /bin/sync lacks.
+# Homebrew keeps GNU sync named gsync; expose it only to the packaging process.
+gnu_sync="$(command -v gsync || true)"
+if [[ -z "$gnu_sync" ]] && command -v brew >/dev/null 2>&1; then
+  coreutils_prefix="$(brew --prefix coreutils 2>/dev/null || true)"
+  if [[ -x "$coreutils_prefix/bin/gsync" ]]; then
+    gnu_sync="$coreutils_prefix/bin/gsync"
+  fi
+fi
+if [[ -z "$gnu_sync" ]]; then
+  echo "DMG packaging requires GNU coreutils. Install Homebrew, then run: brew install coreutils" >&2
+  exit 1
+fi
+packaging_tools="$(mktemp -d "${TMPDIR:-/tmp}/tgfocus-dmg-tools.XXXXXX")"
+trap 'rm -rf "$packaging_tools"' EXIT
+ln -s "$gnu_sync" "$packaging_tools/sync"
 swiftc -module-cache-path "$build/swift-cache" \
   "$repo_root/source/DmgBackground.swift" -o "$build/make-dmg-background"
 "$build/make-dmg-background" "$build/dmg-background.png"
-"$python" -m dmgbuild -s "$repo_root/source/dmg_settings.py" \
+PATH="$packaging_tools:$PATH" "$python" -m dmgbuild -s "$repo_root/source/dmg_settings.py" \
   -D "app=$app" -D "guide=$repo_root/INSTALL.ru.md" \
   -D "background=$build/dmg-background.png" "Telegram Focus" "$output"
 hdiutil verify "$output"
