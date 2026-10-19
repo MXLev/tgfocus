@@ -1,0 +1,63 @@
+name: Build macOS DMG
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Check build platform
+        run: test "$(uname -m)" = arm64
+      - name: Install DMG packaging tools
+        run: brew install coreutils
+      - name: Build app and run Python, native, and worker checks
+        run: python source/build.py
+      - name: Package and verify unsigned DMG
+        run: bash source/package_dmg.sh
+      - name: Test installation from DMG
+        run: bash source/tests/smoke_dmg.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TGFocus-unsigned-arm64
+          path: |
+            dist/TGFocus-unsigned-arm64.dmg
+            dist/TGFocus-unsigned-arm64.dmg.sha256
+          if-no-files-found: error
+      - name: Create draft release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cat > "$RUNNER_TEMP/release-notes.md" <<'EOF'
+          Для Mac с Apple Silicon и macOS 14+. Скачайте TGFocus-unsigned-arm64.dmg, откройте его и перетащите Telegram Focus в Applications.
+
+          Сборка без Apple Developer ID и нотариального заверения: macOS может потребовать разрешить первый запуск через «Системные настройки → Конфиденциальность и безопасность → Всё равно открыть». Не отключайте Gatekeeper.
+
+          Python и Xcode для запуска не нужны. Для подключения Telegram нужны собственные API ID и API Hash.
+
+          Установка: https://github.com/MXLev/tgfocus/blob/main/INSTALL.ru.md
+          Альтернатива — клонировать репозиторий и собрать приложение: https://github.com/MXLev/tgfocus#установка
+          EOF
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo 'A release already exists for this tag; refusing to replace its assets.' >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" \
+            dist/TGFocus-unsigned-arm64.dmg \
+            dist/TGFocus-unsigned-arm64.dmg.sha256 \
+            --verify-tag --draft --title "TGFocus $RELEASE_TAG" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"
