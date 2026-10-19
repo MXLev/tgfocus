@@ -22,13 +22,15 @@ jobs:
       - run: python -m unittest discover -s source/tests -p 'test_*.py' -v
   macos-dmg:
     name: macOS app and DMG
-    runs-on: macos-15-arm64
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+      - name: Check build platform
+        run: test "$(uname -m)" = arm64
       - run: python source/build.py
       - run: bash source/package_dmg.sh
       - run: bash source/tests/smoke_dmg.sh
