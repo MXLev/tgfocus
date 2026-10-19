@@ -1,0 +1,27 @@
+name: Bug report / Ошибка
+description: Report a reproducible problem without private account data.
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, Telegram sessions, login codes, or private messages. See SECURITY.md for security reports.
+  - type: input
+    id: version
+    attributes:
+      label: TGFocus version and installation method
+      placeholder: 1.3.0, DMG or source build
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: macOS version and Mac chip
+      placeholder: macOS 15, M2
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce, expected result, and actual result
+      description: Use synthetic examples; remove personal information from screenshots.
+    validations:
+      required: true
