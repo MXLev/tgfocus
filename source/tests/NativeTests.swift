@@ -27,7 +27,7 @@ struct NativeTests {
         originalWindow.close()
         for enabled in [true, false] {
             for automatic in [true, false] {
-                for focus: FocusFilterState in [.active, .inactive, .unavailable] {
+                for focus: FocusFilterState in [.active, .inactive, .unavailable, .unsupportedSigning] {
                     precondition(FilterPresentation.allowsDelivery(enabled: enabled, automatic: automatic, focus: focus)
                                  == (enabled && (!automatic || focus == .active)))
                 }
@@ -57,6 +57,11 @@ struct NativeTests {
         model.setFilterEnabled(false)
         model.receive(["type": "message", "allowed": true, "title": "test"])
         precondition(model.passed == 0 && model.suppressed == 4)
+        // Native tests and the free DMG have an ad-hoc signature, with no signing team.
+        precondition(!FocusAutomation.hasSigningTeam)
+        model.setAutomaticMode(false)
+        model.setAutomaticMode(true)
+        precondition(!model.config.onlyDuringFocus && model.errorText == FocusAutomation.unsupportedMessage)
         // No configured/active Focus Filter must restore the inactive default.
         precondition(TGFocusFilter().useFilter == false)
         let lockDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

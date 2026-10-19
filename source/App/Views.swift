@@ -123,7 +123,7 @@ struct OverviewView: View {
                 Label(model.filterTitle.uppercased(),
                       systemImage: model.config.enabled ? "checkmark.shield.fill" : "pause.circle.fill")
                     .font(.system(size: 11, weight: .bold)).tracking(1.2)
-                Text(!model.config.enabled ? "Можно выдохнуть." : (model.effectiveFilterEnabled ? "Личное. Срочное. Твоё." : "Ждём фокусирование."))
+                Text(!model.config.enabled ? "Можно выдохнуть." : (model.effectiveFilterEnabled ? "Личное. Срочное. Твоё." : (FocusAutomation.hasSigningTeam ? "Ждём фокусирование." : "Выбери ручной режим.")))
                     .font(.system(size: 24, weight: .semibold, design: .rounded))
                 Text(model.effectiveFilterEnabled ? "Покажем сообщения, которые подходят под твои правила." : (model.config.enabled ? model.focusStatusText : "Telegram Focus сейчас не показывает уведомления."))
                     .font(.system(size: 13)).opacity(0.85)
@@ -152,19 +152,21 @@ struct OverviewView: View {
             StatTile(number: "\(model.config.people.count)", label: "Важных людей", icon: "person.crop.circle.badge.checkmark", color: accent)
         }
         Panel(title: "Фокусирование macOS", icon: "moon") {
-            Toggle("Доставка только при фокусировании", isOn: Binding(
-                get: { model.config.onlyDuringFocus },
-                set: { enabled in
-                    if enabled { model.setAutomaticMode(true) }
-                    else { showFocusWarning = true }
-                }))
-                .alert("Возможны двойные уведомления", isPresented: $showFocusWarning) {
-                    Button("Перейти в ручной режим", role: .destructive) { model.setAutomaticMode(false) }
-                    Button("Отмена", role: .cancel) {}
-                } message: {
-                    Text("TGFocus будет показывать уведомления и без фокусирования. Если обычный Telegram тоже показывает их, одно сообщение может прийти дважды. В ручном режиме выключай фильтр TGFocus, когда он не нужен.")
+            if FocusAutomation.hasSigningTeam {
+                Toggle("Доставка только при фокусировании", isOn: Binding(
+                    get: { model.config.onlyDuringFocus },
+                    set: { enabled in
+                        if enabled { model.setAutomaticMode(true) }
+                        else { showFocusWarning = true }
+                    }))
+            } else {
+                Text(FocusAutomation.unsupportedMessage).font(.callout)
+                if model.config.onlyDuringFocus {
+                    Button("Перейти в ручной режим") { showFocusWarning = true }
+                        .buttonStyle(.borderedProminent)
                 }
-            if model.config.onlyDuringFocus {
+            }
+            if model.config.onlyDuringFocus && FocusAutomation.hasSigningTeam {
                 Text(model.focusStatusText).font(.callout)
                 Text("Один раз в настройках нужного фокусирования добавь Telegram Focus в разрешённые приложения и в «Фильтры фокусирования». В фильтре включи «Включать фильтр TGFocus». Обычный Telegram оставь заглушённым. Вне настроенных режимов доставка TGFocus будет на паузе.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -174,6 +176,12 @@ struct OverviewView: View {
                 Text("Ручной режим: если Telegram тоже показывает уведомления, возможны дубли. Выключай фильтр TGFocus, когда пользуешься обычными уведомлениями Telegram.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+        }
+        .alert("Возможны двойные уведомления", isPresented: $showFocusWarning) {
+            Button("Перейти в ручной режим", role: .destructive) { model.setAutomaticMode(false) }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("TGFocus будет показывать уведомления и без фокусирования. Если обычный Telegram тоже показывает их, одно сообщение может прийти дважды. В ручном режиме выключай фильтр TGFocus, когда он не нужен.")
         }
         if !model.notificationsAllowed {
             Panel(title: "Разреши уведомления", icon: "bell") {
@@ -595,14 +603,14 @@ struct GuideView: View {
                 .font(.caption).foregroundStyle(.secondary)
             Button("К правилам →") { model.selectedPage = "rules" }.buttonStyle(.link)
         }
-        Panel(title: "4. Разреши уведомления и включи авто-режим", icon: "bell.badge") {
+        Panel(title: FocusAutomation.hasSigningTeam ? "4. Разреши уведомления и включи авто-режим" : "4. Разреши уведомления и выбери ручной режим", icon: "bell.badge") {
             Text("Нажми «Разрешить уведомления» и подтверди системный запрос. Затем открой Системные настройки → Уведомления → Telegram Focus: включи допуск уведомлений и баннеры.")
                 .font(.callout).foregroundStyle(.secondary)
             HStack {
                 Button("Разрешить уведомления") { model.requestNotifications() }.buttonStyle(.borderedProminent)
                 Button("Открыть уведомления macOS") { model.openSettings("com.apple.Notifications-Settings.extension") }
             }
-            Text("В «Обзоре» включи «Доставка только при фокусировании» и главный переключатель фильтра. Если фокусирование пока не настроено, приложение покажет ожидание — это нормально. Если раньше ты выбирал ручной режим, включи авто-режим снова.")
+            Text(FocusAutomation.hasSigningTeam ? "В «Обзоре» включи «Доставка только при фокусировании» и главный переключатель фильтра. Если фокусирование пока не настроено, приложение покажет ожидание." : "Бесплатная сборка с ad-hoc подписью не поддерживает системные фильтры фокусирования: macOS требует Team ID в подписи. В «Обзоре» нажми «Перейти в ручной режим» и подтверди предупреждение о дублях. Если ручной режим уже выбран, оставь его включённым. До подтверждения сохранённый авто-режим держит доставку на паузе.")
                 .font(.callout).foregroundStyle(.secondary)
             Button("К обзору →") { model.selectedPage = "overview" }.buttonStyle(.link)
         }
@@ -611,9 +619,9 @@ struct GuideView: View {
                 .font(.callout).foregroundStyle(.secondary)
             Text("В настройках уведомлений обычного Telegram отключи неотложные уведомления, если такой переключатель доступен, чтобы он не обходил фильтр.")
                 .font(.callout).foregroundStyle(.secondary)
-            Text("Прокрути страницу выбранного режима до раздела «Фильтры фокусирования» → «Добавить фильтр» → Telegram Focus → «Важные сообщения Telegram». Включи «Включать фильтр TGFocus» и нажми «Добавить» или «Готово». Повтори для каждого режима, в котором нужен TGFocus.")
+            Text(FocusAutomation.hasSigningTeam ? "Прокрути страницу выбранного режима до раздела «Фильтры фокусирования» → «Добавить фильтр» → Telegram Focus → «Важные сообщения Telegram». Включи «Включать фильтр TGFocus» и нажми «Добавить» или «Готово». Повтори для каждого нужного режима." : "В ручном режиме не добавляй TGFocus в раздел «Фильтры фокусирования»: кнопка Add в ad-hoc сборке может быть неактивна. Достаточно разрешить TGFocus в разделе «Приложения».")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("Важно: TGFocus должен быть и в разрешённых приложениях, и в фильтрах фокусирования. Это два разных раздела. «Команды», доступ к статусу фокусирования и неотложные уведомления TGFocus не нужны. Если приложение не появилось в списке фильтров, заверши и запусти установленную копию из Программ, затем заново открой системные настройки. Пока фильтр не добавлен или его состояние недоступно, авто-доставка остаётся на паузе.")
+            Text(FocusAutomation.hasSigningTeam ? "Для авто-режима TGFocus нужен и в разрешённых приложениях, и в фильтрах фокусирования. Team ID в подписи — только предварительное условие: создание фильтра и переключение режима нужно проверить на этом Mac. Если фильтр не удаётся добавить, используй ручной режим." : "Включай главный фильтр TGFocus вручную вместе с фокусированием macOS. Перед выключением фокусирования выключай фильтр TGFocus — иначе обычный Telegram и TGFocus могут показать одно сообщение дважды.")
                 .font(.caption).foregroundStyle(.secondary)
             Button("Открыть фокусирование") { model.openSettings("com.apple.Focus-Settings.extension") }.buttonStyle(.borderedProminent)
         }
@@ -623,13 +631,13 @@ struct GuideView: View {
             Button("Тестовое уведомление") { model.requestNotifications(test: true) }
             Text("Попроси другого человека написать «срочно» в незаглушённую личку. Проверь реальный баннер, а не только запись в журнале. Сообщение, не подходящее под твои правила, и сообщение из заглушённого чата должны остаться тихими.")
                 .font(.callout).foregroundStyle(.secondary)
-            Text("Оставь фильтр TGFocus включённым и выключи фокусирование. Попроси отправить ещё одно подходящее сообщение: TGFocus должен молчать, обычный Telegram сможет показать своё уведомление. Снова включи фокусирование и проверь, что доставка TGFocus возобновилась. Главный выключатель в приложении должен останавливать её даже во время фокусирования.")
+            Text(FocusAutomation.hasSigningTeam && model.config.onlyDuringFocus ? "Оставь фильтр TGFocus включённым и выключи фокусирование. TGFocus должен молчать; обычный Telegram сможет показать своё уведомление. Снова включи фокусирование и проверь возобновление доставки. Главный выключатель должен останавливать её даже во время фокусирования." : "Выключи главный фильтр TGFocus, затем выключи фокусирование macOS. Попроси отправить ещё одно сообщение: TGFocus должен молчать, обычный Telegram сможет показать своё уведомление. Снова включи фокусирование и главный фильтр, чтобы вернуть доставку TGFocus.")
                 .font(.callout).foregroundStyle(.secondary)
             Text("Если баннера нет, проверь подключение Telegram, разрешение уведомлений macOS, список разрешённых приложений выбранного режима и mute самого чата.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         Panel(title: "Готово — как пользоваться дальше", icon: "sun.max") {
-            Text("В авто-режиме оставь главный фильтр включённым: доставка TGFocus работает только пока активен настроенный фильтр фокусирования macOS. Главный выключатель в меню и в настройках всегда останавливает доставку. Если выберешь ручной режим, включай и выключай фильтр самостоятельно — вне фокусирования возможны дубли с Telegram.")
+            Text(FocusAutomation.hasSigningTeam && model.config.onlyDuringFocus ? "В авто-режиме оставь главный фильтр включённым. Главный выключатель в меню и в настройках всегда останавливает доставку." : "В ручном режиме включай и выключай фильтр самостоятельно. Главный выключатель в меню и в настройках всегда останавливает доставку. Вне фокусирования возможны дубли с Telegram, если оставить фильтр включённым.")
                 .font(.callout).foregroundStyle(.secondary)
             Divider()
             Text("Закрытие окна настроек оставляет фильтр работающим. Чтобы полностью остановить приложение, нажми самолётик → «Завершить Telegram Focus». Во сне, при выключенном Mac или без интернета новые сообщения не обрабатываются.")

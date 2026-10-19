@@ -90,7 +90,7 @@ def build(args):
     shutil.copytree(helper, resources / "helper", symlinks=True)
     plist = dict(CFBundleExecutable="TelegramFocus", CFBundleIdentifier="local.mxlev.TelegramFocus",
                  CFBundleName="Telegram Focus", CFBundleDisplayName="Telegram Focus", CFBundlePackageType="APPL",
-                 CFBundleShortVersionString="1.4.0", CFBundleVersion="6", CFBundleIconFile="AppIcon", LSUIElement=True,
+                 CFBundleShortVersionString="1.4.0", CFBundleVersion="7", CFBundleIconFile="AppIcon", LSUIElement=True,
                  LSMinimumSystemVersion="14.0", NSHighResolutionCapable=True,
                  NSSupportsAutomaticTermination=False, NSPrincipalClass="NSApplication")
     with (contents / "Info.plist").open("wb") as stream: plistlib.dump(plist, stream)

@@ -11,6 +11,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 Task { @MainActor in await self.runStartupSmokeTest() }
             } else if AppModel.shared.startupAllowed {
                 AppModel.shared.updateFocusAutomation()
+                if AppModel.shared.config.onlyDuringFocus && !FocusAutomation.hasSigningTeam {
+                    SettingsWindowController.shared.show {
+                        NSHostingController(rootView: RootView().environmentObject(AppModel.shared))
+                    }
+                }
 
             }
         }
@@ -27,8 +32,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             model.shutdown()
             exit(1)
         }
-        guard await FocusAutomation.read() == .inactive else {
-            fputs("App startup smoke test: inactive system Focus Filter could not be queried\n", stderr)
+        guard !FocusAutomation.hasSigningTeam, await FocusAutomation.read() == .unsupportedSigning else {
+            fputs("App startup smoke test: ad-hoc signing must report Focus as unsupported\n", stderr)
             model.shutdown()
             exit(1)
         }
@@ -97,7 +102,7 @@ struct MenuContent: View {
         Text(model.connected ? "Telegram: \(model.accountName)" : model.statusText)
         Button(model.filterTitle) { model.setFilterEnabled(!model.config.enabled) }
         if model.config.onlyDuringFocus {
-            Text(model.effectiveFilterEnabled ? "Авто-режим: доставка включена" : (model.config.enabled ? "Авто-режим: ожидание фокусирования" : "Доставка выключена"))
+            Text(!FocusAutomation.hasSigningTeam ? "Авто-режим недоступен — открой настройки" : (model.effectiveFilterEnabled ? "Авто-режим: доставка включена" : (model.config.enabled ? "Авто-режим: ожидание фокусирования" : "Доставка выключена")))
         } else {
             Text("Ручной режим: возможны дубли с Telegram")
         }

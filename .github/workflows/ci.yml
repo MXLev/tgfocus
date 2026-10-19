@@ -10,13 +10,6 @@ permissions:
   contents: read
 
 jobs:
-  focus-metadata-probe:
-    name: Focus configuration metadata probe
-    runs-on: macos-26
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - run: python3 source/tests/probe_focus_metadata.py
   python-tests:
     name: Python tests
     runs-on: ubuntu-latest

@@ -280,6 +280,10 @@ final class AppModel: ObservableObject {
         saveConfig()
     }
     func setAutomaticMode(_ enabled: Bool) {
+        guard !enabled || FocusAutomation.hasSigningTeam else {
+            errorText = FocusAutomation.unsupportedMessage
+            return
+        }
         config.onlyDuringFocus = enabled
         updateFocusAutomation()
         saveConfig()
@@ -338,6 +342,8 @@ final class AppModel: ObservableObject {
             focusStatusText = "Фильтр фокусирования macOS активен"
         case .inactive:
             focusStatusText = "Ожидание фокусирования. Добавь TGFocus в «Фильтры фокусирования» нужного режима и включи в нём фильтр TGFocus."
+        case .unsupportedSigning:
+            focusStatusText = FocusAutomation.unsupportedMessage
         case .unavailable:
             focusStatusText = "macOS не предоставила состояние фильтра фокусирования. Доставка приостановлена; проверь настройку или выбери ручной режим."
         }
@@ -349,6 +355,11 @@ final class AppModel: ObservableObject {
         focusPollingTask = nil
         focusReadGeneration += 1
         focusFilterState = .unavailable
+        if config.onlyDuringFocus && !FocusAutomation.hasSigningTeam {
+            focusFilterState = .unsupportedSigning
+            focusStatusText = FocusAutomation.unsupportedMessage
+            return
+        }
         guard config.enabled, config.onlyDuringFocus, !Self.isStartupSmokeTest else {
             focusStatusText = !config.enabled ? "Фильтр выключен" : (config.onlyDuringFocus ? "Ожидание фокусирования" : "Ручной режим")
             return
