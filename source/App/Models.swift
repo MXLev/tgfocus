@@ -6,7 +6,6 @@ import Security
 import SwiftUI
 import UserNotifications
 import Darwin
-import Intents
 
 // Keep the descriptor open for the entire app lifetime. Never unlink a lock file:
 // another copy could otherwise lock a different inode and run concurrently.
@@ -213,8 +212,6 @@ final class AppModel: ObservableObject {
     nonisolated static var isStartupSmokeTest: Bool {
         ProcessInfo.processInfo.arguments.contains("--startup-smoke-test")
     }
-    // The distributed ad-hoc build cannot request the restricted notification entitlement.
-    nonisolated static let automaticModeSupported = false
     @Published var config = FilterConfig()
     @Published var credentials = Credentials()
     @Published var state = "disconnected"
@@ -225,7 +222,6 @@ final class AppModel: ObservableObject {
     @Published var busy = false
     @Published var notificationStatus = "Не проверено"
     @Published var notificationsAllowed = false
-    @Published var timeSensitiveAllowed = false
     @Published var dialogs: [Dialog] = []
     @Published var loadingDialogs = false
     @Published var activities: [Activity] = []
@@ -235,9 +231,10 @@ final class AppModel: ObservableObject {
     @Published var simulationReason = ""
     @Published var selectedPage = "overview"
     @Published var showLogoutConfirmation = false
-    @Published var focusSilencesApp: Bool?
+    @Published private(set) var focusFilterState: FocusFilterState = .unavailable
     @Published var focusStatusText = "Автоматический режим выключен"
     private var focusPollingTask: Task<Void, Never>?
+    private var focusReadGeneration = 0
     @Published var qrImage: NSImage?
     @Published var qrExpiresAt = Date.distantPast
     @Published var deliveryMethod = ""
@@ -252,16 +249,27 @@ final class AppModel: ObservableObject {
 
     var connected: Bool { state == "connected" }
     var effectiveFilterEnabled: Bool {
-        Self.shouldNotify(enabled: config.enabled, onlyDuringFocus: config.onlyDuringFocus,
-            focused: focusSilencesApp, timeSensitiveAllowed: timeSensitiveAllowed)
+        FilterPresentation.allowsDelivery(enabled: config.enabled, automatic: config.onlyDuringFocus,
+                                          focus: focusFilterState)
     }
-    nonisolated static func shouldNotify(enabled: Bool, onlyDuringFocus: Bool, focused: Bool?, timeSensitiveAllowed: Bool) -> Bool {
-        enabled && (!onlyDuringFocus || (focused == true && timeSensitiveAllowed))
+    var filterTitle: String { FilterPresentation.title(enabled: config.enabled) }
+    var filterBinding: Binding<Bool> {
+        Binding(get: { self.config.enabled }, set: { self.setFilterEnabled($0) })
+    }
+    func setFilterEnabled(_ enabled: Bool) {
+        config.enabled = enabled
+        saveConfig()
+    }
+    func setAutomaticMode(_ enabled: Bool) {
+        config.onlyDuringFocus = enabled
+        updateFocusAutomation()
+        saveConfig()
     }
     var authStep: Bool { ["phone", "code", "password", "qr", "qrExpired", "authUnsupported"].contains(state) }
     var statusColor: Color { connected ? .green : state == "connecting" || state == "reconnecting" ? .orange : .secondary }
 
-    init() {
+    init(startRuntime: Bool = true) {
+        guard startRuntime else { return }
         guard StartupGuard.allowLaunch() else {
             DispatchQueue.main.async { NSApp.terminate(nil) }
             return
@@ -289,54 +297,46 @@ final class AppModel: ObservableObject {
             }
         } catch { errorText = error.localizedDescription }
         startHelper()
-        updateFocusAutomation(requestAccess: false)
+        updateFocusAutomation()
         Task { await refreshNotificationStatus() }
     }
 
-    func refreshFocusStatus() {
+    @discardableResult func refreshFocusStatus() async -> FocusFilterState {
         guard config.onlyDuringFocus else {
-            focusSilencesApp = nil
-            focusStatusText = "Автоматический режим выключен"
-            return
+            focusStatusText = "Ручной режим"
+            return .inactive
         }
-        guard Self.automaticModeSupported else {
-            focusSilencesApp = nil
-            focusStatusText = "Автоматический режим недоступен в этой сборке: нет системного права на неотложные уведомления. Перейдите в ручной режим, чтобы включить фильтр."
-            return
+        focusReadGeneration += 1
+        let generation = focusReadGeneration
+        let result = await FocusAutomation.read()
+        // Only the newest query updates presentation. Each delivery uses its own result.
+        guard config.onlyDuringFocus, generation == focusReadGeneration else { return result }
+        focusFilterState = result
+        switch result {
+        case .active:
+            focusStatusText = "Фильтр фокусирования macOS активен"
+        case .inactive:
+            focusStatusText = "Ожидание фокусирования. Добавь TGFocus в «Фильтры фокусирования» нужного режима и включи в нём фильтр TGFocus."
+        case .unavailable:
+            focusStatusText = "macOS не предоставила состояние фильтра фокусирования. Доставка приостановлена; проверь настройку или выбери ручной режим."
         }
-        let center = INFocusStatusCenter.default
-        guard center.authorizationStatus == .authorized else {
-            focusSilencesApp = nil
-            focusStatusText = "Нет доступа к статусу фокусирования. Уведомления TGFocus приостановлены. Разрешите доступ или выключите автоматический режим."
-            return
-        }
-        // This status is app-relative. TGFocus must stay OUT of Allowed Apps;
-        // time-sensitive notifications carry matching messages through Focus.
-        focusSilencesApp = center.focusStatus.isFocused
-        switch focusSilencesApp {
-        case true?: focusStatusText = timeSensitiveAllowed ? "Фокусирование ограничивает TGFocus — важные сообщения доставляются как неотложные" :
-            "Фокусирование включено, но неотложные уведомления TGFocus не разрешены. Разрешите их в настройках уведомлений macOS."
-        case false?: focusStatusText = "Фокусирование не ограничивает TGFocus — уведомления на паузе. Если режим включён, уберите TGFocus из разрешённых приложений."
-        case nil: focusStatusText = "macOS не сообщает статус. Уведомления TGFocus приостановлены. Проверьте доступ к статусу фокусирования или вернитесь в ручной режим."
-        }
+        return result
     }
 
-    func updateFocusAutomation(requestAccess: Bool = true) {
+    func updateFocusAutomation() {
         focusPollingTask?.cancel()
         focusPollingTask = nil
-        refreshFocusStatus()
-        guard config.onlyDuringFocus && Self.automaticModeSupported else { return }
-        let center = INFocusStatusCenter.default
-        if requestAccess && center.authorizationStatus == .notDetermined {
-            center.requestAuthorization { [weak self] _ in
-                Task { @MainActor in self?.refreshFocusStatus() }
-            }
+        focusReadGeneration += 1
+        focusFilterState = .unavailable
+        guard config.onlyDuringFocus, !Self.isStartupSmokeTest else {
+            focusStatusText = config.onlyDuringFocus ? "Ожидание фокусирования" : "Ручной режим"
+            return
         }
         focusPollingTask = Task { [weak self] in
             while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(2)) }
+                await self?.refreshFocusStatus()
+                do { try await Task.sleep(for: .seconds(1)) }
                 catch { return }
-                await self?.refreshNotificationStatus()
             }
         }
     }
@@ -501,29 +501,36 @@ final class AppModel: ObservableObject {
             simulationAllowed = object["allowed"] as? Bool ?? false
             simulationReason = object["reason"] as? String ?? ""
         case "message":
-            refreshFocusStatus() // Check again at delivery time, not only on the timer.
-            let ruleAllowed = object["allowed"] as? Bool ?? false
-            let allowed = ruleAllowed && effectiveFilterEnabled
-            let title = object["title"] as? String ?? "Telegram"
-            let reason = ruleAllowed && !effectiveFilterEnabled ?
-                (config.enabled ? focusStatusText : "Фильтр на паузе") : (object["reason"] as? String ?? "")
-            let url = object["url"] as? String ?? "tg://"
-            if allowed { passed += 1 } else { suppressed += 1 }
-            activities.insert(Activity(title: title, reason: reason, allowed: allowed, url: url), at: 0)
-            if activities.count > 50 { activities.removeLast() }
-            if allowed {
-                let body = config.showPreview ? (object["text"] as? String ?? "Новое сообщение") : "Новое важное сообщение в Telegram"
-                let subtitle = object["kind"] as? String == "private" ? "" : object["sender"] as? String ?? ""
-                notify(title: title, subtitle: subtitle, body: body, url: url,
-                    id: "tg-\(object["chatId"] ?? "")-\(object["messageId"] ?? "")")
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let focus = await self.refreshFocusStatus()
+                self.deliverMessage(object, focus: focus)
             }
         default: break
         }
     }
 
+    func deliverMessage(_ object: [String: Any], focus: FocusFilterState) {
+        let ruleAllowed = object["allowed"] as? Bool ?? false
+        let deliveryEnabled = FilterPresentation.allowsDelivery(enabled: config.enabled, automatic: config.onlyDuringFocus, focus: focus)
+        let allowed = ruleAllowed && deliveryEnabled
+        let title = object["title"] as? String ?? "Telegram"
+        let reason = ruleAllowed && !deliveryEnabled ?
+            (config.enabled ? focusStatusText : "Фильтр на паузе") : (object["reason"] as? String ?? "")
+        let url = object["url"] as? String ?? "tg://"
+        if allowed { passed += 1 } else { suppressed += 1 }
+        activities.insert(Activity(title: title, reason: reason, allowed: allowed, url: url), at: 0)
+        if activities.count > 50 { activities.removeLast() }
+        if allowed {
+            let body = config.showPreview ? (object["text"] as? String ?? "Новое сообщение") : "Новое важное сообщение в Telegram"
+            let subtitle = object["kind"] as? String == "private" ? "" : object["sender"] as? String ?? ""
+            notify(title: title, subtitle: subtitle, body: body, url: url,
+                id: "tg-\(object["chatId"] ?? "")-\(object["messageId"] ?? "")")
+        }
+    }
+
     func refreshNotificationStatus() async {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
-        timeSensitiveAllowed = Self.automaticModeSupported && settings.timeSensitiveSetting == .enabled
         notificationsAllowed = [.authorized, .provisional].contains(settings.authorizationStatus)
         switch settings.authorizationStatus {
         case .authorized: notificationStatus = "Разрешены"
@@ -531,7 +538,7 @@ final class AppModel: ObservableObject {
         case .denied: notificationStatus = "Запрещены в macOS"
         default: notificationStatus = "Нужно разрешение"
         }
-        refreshFocusStatus()
+        await refreshFocusStatus()
     }
 
     func requestNotifications(test: Bool = false) {
@@ -543,7 +550,7 @@ final class AppModel: ObservableObject {
                 await refreshNotificationStatus()
                 if allowed && test {
                     notify(title: "Telegram Focus", subtitle: "Проверка уведомлений",
-                        body: "Проверка доставки. В ручном режиме разреши TGFocus в выбранном фокусировании, заглуши обычный Telegram и выключай фильтр TGFocus вне фокусирования.",
+                        body: "Проверка доставки. Разреши TGFocus в выбранном фокусировании и заглуши обычный Telegram. Для авто-режима добавь TGFocus в «Фильтры фокусирования».",
                         url: "", id: UUID().uuidString)
                 } else if !allowed {
                     errorText = "Разреши уведомления Telegram Focus в Системных настройках → Уведомления."
@@ -555,17 +562,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    nonisolated static func notificationLevel(automatic: Bool) -> UNNotificationInterruptionLevel {
-        automatic ? .timeSensitive : .active
-    }
-
     func notify(title: String, subtitle: String, body: String, url: String, id: String) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.subtitle = subtitle
         content.body = body
         if config.playSound { content.sound = .default }
-        content.interruptionLevel = Self.notificationLevel(automatic: Self.automaticModeSupported && config.onlyDuringFocus)
+        content.interruptionLevel = .active
         content.userInfo = ["url": url]
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil)) { [weak self] error in
             if error != nil {

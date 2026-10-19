@@ -11,11 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 Task { @MainActor in await self.runStartupSmokeTest() }
             } else if AppModel.shared.startupAllowed {
                 AppModel.shared.updateFocusAutomation()
-                if AppModel.shared.config.onlyDuringFocus && !AppModel.automaticModeSupported {
-                    SettingsWindowController.shared.show {
-                        NSHostingController(rootView: RootView().environmentObject(AppModel.shared))
-                    }
-                }
+
             }
         }
     }
@@ -28,6 +24,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         guard model.helperReady else {
             fputs("App startup smoke test: worker did not become ready\n", stderr)
+            model.shutdown()
+            exit(1)
+        }
+        guard await FocusAutomation.read() == .inactive else {
+            fputs("App startup smoke test: inactive system Focus Filter could not be queried\n", stderr)
             model.shutdown()
             exit(1)
         }
@@ -75,7 +76,8 @@ struct TelegramFocusApp: App {
         MenuBarExtra {
             MenuContent().environmentObject(model)
         } label: {
-            Image(systemName: model.effectiveFilterEnabled ? "paperplane.circle.fill" : "paperplane.circle")
+            Image(nsImage: FilterPresentation.icon(enabled: model.config.enabled))
+                .id(model.config.enabled)
                 .accessibilityLabel("Telegram Focus")
                 .help("Telegram Focus")
         }
@@ -86,10 +88,9 @@ struct MenuContent: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
         Text(model.connected ? "Telegram: \(model.accountName)" : model.statusText)
-        Toggle("Фильтр включён", isOn: $model.config.enabled)
-            .onChange(of: model.config.enabled) { model.saveConfig() }
+        Button(model.filterTitle) { model.setFilterEnabled(!model.config.enabled) }
         if model.config.onlyDuringFocus {
-            Text(model.effectiveFilterEnabled ? "Авто-режим: неотложные уведомления" : "Авто-режим: пауза — подробнее в настройках")
+            Text(model.effectiveFilterEnabled ? "Авто-режим: доставка включена" : (model.config.enabled ? "Авто-режим: ожидание фокусирования" : "Доставка выключена"))
         } else {
             Text("Ручной режим: возможны дубли с Telegram")
         }

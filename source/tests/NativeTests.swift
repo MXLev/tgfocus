@@ -27,18 +27,33 @@ struct NativeTests {
         originalWindow.close()
         for enabled in [true, false] {
             for automatic in [true, false] {
-                let focusStates: [Bool?] = [true, false, nil]
-                for focused in focusStates {
-                    for timeSensitive in [true, false] {
-                        precondition(AppModel.shouldNotify(enabled: enabled, onlyDuringFocus: automatic,
-                            focused: focused, timeSensitiveAllowed: timeSensitive)
-                            == (enabled && (!automatic || (focused == true && timeSensitive))))
-                    }
+                for focus: FocusFilterState in [.active, .inactive, .unavailable] {
+                    precondition(FilterPresentation.allowsDelivery(enabled: enabled, automatic: automatic, focus: focus)
+                                 == (enabled && (!automatic || focus == .active)))
                 }
             }
         }
-        precondition(AppModel.notificationLevel(automatic: true) == .timeSensitive)
-        precondition(AppModel.notificationLevel(automatic: false) == .active)
+        precondition(FilterPresentation.title(enabled: false) == "Фильтр выключен")
+        precondition(FilterPresentation.title(enabled: true) == "Фильтр включён")
+        let onIcon = FilterPresentation.icon(enabled: true)
+        let offIcon = FilterPresentation.icon(enabled: false)
+        precondition(onIcon.isTemplate && offIcon.isTemplate && onIcon.tiffRepresentation != offIcon.tiffRepresentation)
+        let model = AppModel(startRuntime: false)
+        model.config.onlyDuringFocus = false
+        model.filterBinding.wrappedValue = false // The settings control uses this binding.
+        precondition(!model.config.enabled && !model.effectiveFilterEnabled && model.filterTitle == "Фильтр выключен")
+        model.setFilterEnabled(true) // The menu uses the same setter.
+        precondition(model.filterBinding.wrappedValue && model.effectiveFilterEnabled && model.filterTitle == "Фильтр включён")
+        model.setFilterEnabled(false)
+        model.deliverMessage(["allowed": true, "title": "test"], focus: .active)
+        precondition(model.passed == 0 && model.suppressed == 1)
+        model.config.enabled = true
+        model.config.onlyDuringFocus = true
+        model.deliverMessage(["allowed": true, "title": "test"], focus: .inactive)
+        model.deliverMessage(["allowed": true, "title": "test"], focus: .unavailable)
+        precondition(model.passed == 0 && model.suppressed == 3)
+        // No configured/active Focus Filter must restore the inactive default.
+        precondition(TGFocusFilter().useFilter == false)
         let lockDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: lockDirectory) }
         do {

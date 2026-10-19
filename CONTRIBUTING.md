@@ -14,7 +14,7 @@ python3.13 -m venv .venv
 .venv/bin/python -m unittest discover -s source/tests -p 'test_*.py' -v
 ```
 
-Building the native app requires an Apple Silicon Mac, macOS 14+, Python 3.13, and Xcode Command Line Tools. To package a DMG, also install [Homebrew](https://brew.sh/) and GNU coreutils. These are build tools, not requirements for users installing the DMG:
+Building the native app requires an Apple Silicon Mac, macOS 14+, Python 3.13, and full Xcode (including appintentsmetadataprocessor). To package a DMG, also install [Homebrew](https://brew.sh/) and GNU coreutils. These are build tools, not requirements for users installing the DMG:
 
 ```sh
 python3.13 source/build.py
@@ -45,8 +45,9 @@ The CI job validates the DMG automatically, but only this test on your Mac valid
 - Try launching the app directly from the read-only DMG: it should explain installation and exit before starting a worker or loading credentials.
 - With an installed copy running, launch a second copy from a different writable folder. It should explain how to quit the first copy and exit without starting another worker.
 - The free ad-hoc build must launch without the restricted time-sensitive entitlement. CI verifies the installed app signature, starts its actual signed executable and worker, and opens/reopens settings on macOS 15 and 26 using the same DMG. This test uses an isolated data directory and does not access credentials or request notification permissions.
-- Existing automatic-mode preferences remain paused with an explanation. Choose manual mode: expect a duplicate-notification warning and Cancel/Confirm options. Cancel must preserve the paused preference; confirm must persist manual mode after restart. No Focus-status permission should be requested in this build.
-- For manual mode, allow TGFocus in the selected Focus's Allowed Apps and mute ordinary Telegram in that Focus. Enable Focus and the TGFocus filter; verify a real matching message produces one banner. Before disabling Focus, disable the TGFocus filter; verify ordinary Telegram resumes without duplicates. Check the guide shows these same steps.
+- Automatic mode uses the native `SetFocusFilterIntent.current`, with a false default when no filter is active. Allow TGFocus in the selected Focus's Allowed Apps and add its Focus Filter with “Включать фильтр TGFocus” enabled. Keep ordinary Telegram muted. Toggle Focus off/on with the master switch on: only matching messages during that configured Focus may produce TGFocus banners. Unknown state must pause delivery. No Focus-status permission or time-sensitive entitlement is required.
+- Test the master switch from both settings and the menu: off must stop delivery, both labels must update, and the template menu icon must change between outlined and filled. An enabled master switch waiting for Focus must say so rather than appear broken. Manual mode still requires a duplicate-notification warning; confirm persists after restart.
+- CI validates generated App Intents metadata and queries the inactive system Focus Filter from the actual signed app on macOS 15 and 26. Discoverability in System Settings and real Focus transitions require the interactive Mac test above.
 - Check mention-only and reply-only switches independently, including a reply that also explicitly mentions you. Check inherited chat/category mute settings, a muted forum topic in an unmuted group, an explicitly unmuted topic, and the General topic.
 - While the app is running, a source build must refuse to replace it. Run two source builds concurrently: the second must stop before touching shared output. The runtime lock covers the entire first build through installation. Python tests exercise copy/validation failures, rollback, and lock contention throughout the build.
 

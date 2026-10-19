@@ -49,5 +49,8 @@ PY
 test -x "$app/Contents/MacOS/TelegramFocus"
 python3 "$repo_root/source/tests/smoke_worker.py" \
   "$app/Contents/Resources/helper/focus-worker"
+test -s "$app/Contents/Resources/Metadata.appintents/extract.actionsdata"
+# Register this installed copy as Finder/Launch Services does on a normal launch.
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app"
 python3 "$repo_root/source/tests/smoke_app.py" "$app"
 echo "DMG checksum, contents, app copy, signature, and installed worker OK"
