@@ -19,4 +19,6 @@ icon_locations = {
     "Applications": (480, 210),
     "Установка.txt": (320, 345),
 }
-hide_extensions = ["Telegram Focus.app"]
+# dmgbuild uses SetFile for this option, adding FinderInfo to the signed bundle.
+# Leave the app untouched so strict codesign verification survives installation.
+hide_extensions = []

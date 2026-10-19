@@ -28,6 +28,8 @@ test "$(readlink "$mount_point/Applications")" = /Applications
 test -s "$mount_point/Установка.txt"
 test -s "$mount_point/.DS_Store"
 test -s "$mount_point/.background.png"
+# Validate the distributed bundle before copying, as well as the installed copy.
+codesign --verify --deep --strict "$mount_point/Telegram Focus.app"
 ditto "$mount_point/Telegram Focus.app" "$test_root/Telegram Focus.app"
 # Detach before testing to ensure the installed app is self-contained.
 hdiutil detach "$mount_point"
