@@ -5,6 +5,73 @@ import CoreImage.CIFilterBuiltins
 import Security
 import SwiftUI
 import UserNotifications
+import Darwin
+import Intents
+
+// Keep the descriptor open for the entire app lifetime. Never unlink a lock file:
+// another copy could otherwise lock a different inode and run concurrently.
+final class RuntimeLock {
+    private let handle: FileHandle
+    init(directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        let path = directory.appendingPathComponent("runtime.lock").path
+        let descriptor = Darwin.open(path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            let error = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            try? handle.close()
+            throw error
+        }
+    }
+}
+
+@MainActor
+enum StartupGuard {
+    private static var runtimeLock: RuntimeLock?
+
+    static func dataDirectory() throws -> URL {
+        if let override = ProcessInfo.processInfo.environment["TELEGRAM_FOCUS_DATA_DIR"] {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        return try FileManager.default.url(for: .applicationSupportDirectory,
+            in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("TelegramFocus")
+    }
+
+    static func allowLaunch() -> Bool {
+        do {
+            if try Bundle.main.bundleURL.resourceValues(forKeys: [.volumeIsReadOnlyKey]).volumeIsReadOnly == true {
+                show("Сначала установите приложение", "Перетащите Telegram Focus из образа диска в Applications (Программы), извлеките образ и запустите приложение из Программ.")
+                return false
+            }
+            let identifier = Bundle.main.bundleIdentifier ?? CredentialStore.service
+            if let other = NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
+                .first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
+                show("Telegram Focus уже запущен", "Чтобы запустить эту версию, сначала завершите предыдущую через значок самолётика → «Завершить Telegram Focus». Закрытие окна настроек не завершает приложение.")
+                other.activate(options: [.activateIgnoringOtherApps])
+                return false
+            }
+            runtimeLock = try RuntimeLock(directory: dataDirectory())
+            return true
+        } catch let error as POSIXError where error.code.rawValue == EWOULDBLOCK {
+            show("Telegram Focus занят", "Другая копия приложения уже работает или выполняется обновление. Завершите её либо дождитесь завершения сборки и повторите запуск.")
+            return false
+        } catch {
+            show("Не удалось безопасно запустить приложение", error.localizedDescription)
+            return false
+        }
+    }
+
+    private static func show(_ title: String, _ text: String) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = text
+        alert.addButton(withTitle: "Понятно")
+        alert.runModal()
+    }
+}
 
 struct Person: Codable, Identifiable, Equatable {
     var id: String
@@ -26,11 +93,13 @@ struct FilterConfig: Codable {
     var showPreview = true
     var playSound = true
     var allowMentions = true
+    var allowReplies = true
+    var onlyDuringFocus = true
 
     init() {}
 
     enum CodingKeys: String, CodingKey {
-        case enabled, allPrivate, keywords, people, chats, showPreview, playSound, allowMentions
+        case enabled, allPrivate, keywords, people, chats, showPreview, playSound, allowMentions, allowReplies, onlyDuringFocus
     }
 
     init(from decoder: Decoder) throws {
@@ -43,6 +112,9 @@ struct FilterConfig: Codable {
         showPreview = try values.decodeIfPresent(Bool.self, forKey: .showPreview) ?? true
         playSound = try values.decodeIfPresent(Bool.self, forKey: .playSound) ?? true
         allowMentions = try values.decodeIfPresent(Bool.self, forKey: .allowMentions) ?? true
+        // The old switch controlled both; preserve its value when migrating.
+        allowReplies = try values.decodeIfPresent(Bool.self, forKey: .allowReplies) ?? allowMentions
+        onlyDuringFocus = try values.decodeIfPresent(Bool.self, forKey: .onlyDuringFocus) ?? true
     }
 }
 
@@ -55,6 +127,9 @@ struct Credentials: Codable {
 enum QRRenderer {
     static func image(for url: String) -> NSImage? {
         guard url.hasPrefix("tg://login?token=") else { return nil }
+        let token = url.dropFirst("tg://login?token=".count)
+        let allowed = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+        guard !token.isEmpty, token.allSatisfy({ allowed.contains($0) }) else { return nil }
         let filter = CIFilter.qrCodeGenerator()
         filter.message = Data(url.utf8)
         filter.correctionLevel = "M"
@@ -154,6 +229,9 @@ final class AppModel: ObservableObject {
     @Published var simulationReason = ""
     @Published var selectedPage = "overview"
     @Published var showLogoutConfirmation = false
+    @Published var focusActive: Bool?
+    @Published var focusStatusText = "Автоматический режим выключен"
+    private var focusPollingTask: Task<Void, Never>?
     @Published var qrImage: NSImage?
     @Published var qrExpiresAt = Date.distantPast
     @Published var deliveryMethod = ""
@@ -164,20 +242,26 @@ final class AppModel: ObservableObject {
     private var outputPipe: Pipe?
     private var shouldReconnect = false
     private var configURL: URL?
+    private(set) var startupAllowed = false
 
     var connected: Bool { state == "connected" }
+    var effectiveFilterEnabled: Bool {
+        Self.shouldNotify(enabled: config.enabled, onlyDuringFocus: config.onlyDuringFocus, focused: focusActive)
+    }
+    nonisolated static func shouldNotify(enabled: Bool, onlyDuringFocus: Bool, focused: Bool?) -> Bool {
+        enabled && (!onlyDuringFocus || focused == true)
+    }
     var authStep: Bool { ["phone", "code", "password", "qr", "qrExpired", "authUnsupported"].contains(state) }
     var statusColor: Color { connected ? .green : state == "connecting" || state == "reconnecting" ? .orange : .secondary }
 
     init() {
+        guard StartupGuard.allowLaunch() else {
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+            return
+        }
+        startupAllowed = true
         do {
-            let root: URL
-            if let override = ProcessInfo.processInfo.environment["TELEGRAM_FOCUS_DATA_DIR"] {
-                root = URL(fileURLWithPath: override, isDirectory: true)
-            } else {
-                root = try FileManager.default.url(for: .applicationSupportDirectory,
-                    in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("TelegramFocus")
-            }
+            let root = try StartupGuard.dataDirectory()
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
                 attributes: [.posixPermissions: 0o700])
             configURL = root.appendingPathComponent("rules.json")
@@ -192,7 +276,48 @@ final class AppModel: ObservableObject {
             }
         } catch { errorText = error.localizedDescription }
         startHelper()
+        updateFocusAutomation(requestAccess: false)
         Task { await refreshNotificationStatus() }
+    }
+
+    func refreshFocusStatus() {
+        guard config.onlyDuringFocus else {
+            focusActive = nil
+            focusStatusText = "Автоматический режим выключен"
+            return
+        }
+        let center = INFocusStatusCenter.default
+        guard center.authorizationStatus == .authorized else {
+            focusActive = nil
+            focusStatusText = "Нет доступа к статусу фокусирования. Уведомления TGFocus приостановлены. Разрешите доступ или выключите автоматический режим."
+            return
+        }
+        focusActive = center.focusStatus.isFocused
+        switch focusActive {
+        case true?: focusStatusText = "Фокусирование включено — TGFocus применяет правила"
+        case false?: focusStatusText = "Фокусирование выключено — TGFocus не отправляет уведомления"
+        case nil: focusStatusText = "macOS не сообщает статус. Уведомления TGFocus приостановлены. Проверьте доступ к статусу фокусирования или вернитесь в ручной режим."
+        }
+    }
+
+    func updateFocusAutomation(requestAccess: Bool = true) {
+        focusPollingTask?.cancel()
+        focusPollingTask = nil
+        refreshFocusStatus()
+        guard config.onlyDuringFocus else { return }
+        let center = INFocusStatusCenter.default
+        if requestAccess && center.authorizationStatus == .notDetermined {
+            center.requestAuthorization { [weak self] _ in
+                Task { @MainActor in self?.refreshFocusStatus() }
+            }
+        }
+        focusPollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(2)) }
+                catch { return }
+                self?.refreshFocusStatus()
+            }
+        }
     }
 
     func startHelper() {
@@ -355,9 +480,12 @@ final class AppModel: ObservableObject {
             simulationAllowed = object["allowed"] as? Bool ?? false
             simulationReason = object["reason"] as? String ?? ""
         case "message":
-            let allowed = object["allowed"] as? Bool ?? false
+            refreshFocusStatus() // Check again at delivery time, not only on the timer.
+            let ruleAllowed = object["allowed"] as? Bool ?? false
+            let allowed = ruleAllowed && effectiveFilterEnabled
             let title = object["title"] as? String ?? "Telegram"
-            let reason = object["reason"] as? String ?? ""
+            let reason = ruleAllowed && !effectiveFilterEnabled ?
+                (config.enabled ? focusStatusText : "Фильтр на паузе") : (object["reason"] as? String ?? "")
             let url = object["url"] as? String ?? "tg://"
             if allowed { passed += 1 } else { suppressed += 1 }
             activities.insert(Activity(title: title, reason: reason, allowed: allowed, url: url), at: 0)
@@ -425,8 +553,8 @@ final class AppModel: ObservableObject {
         send(["command": "dialogs"])
     }
 
-    func simulate(text: String, kind: String, chatId: String, senderId: String, mentioned: Bool = false) {
-        send(["command": "simulate", "message": ["text": text, "kind": kind, "chatId": chatId, "senderId": senderId, "mentioned": mentioned]])
+    func simulate(text: String, kind: String, chatId: String, senderId: String, mentioned: Bool = false, replyToMe: Bool = false) {
+        send(["command": "simulate", "message": ["text": text, "kind": kind, "chatId": chatId, "senderId": senderId, "mentioned": mentioned, "replyToMe": replyToMe]])
     }
 
     func logout() {
@@ -436,6 +564,7 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() {
+        focusPollingTask?.cancel()
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         if process?.isRunning == true {
             send(["command": "quit"])

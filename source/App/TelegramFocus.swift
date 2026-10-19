@@ -5,6 +5,9 @@ import UserNotifications
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
+        MainActor.assumeIsolated {
+            if AppModel.shared.startupAllowed { AppModel.shared.updateFocusAutomation() }
+        }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationWillTerminate(_ notification: Notification) {
@@ -29,13 +32,10 @@ struct TelegramFocusApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var model = AppModel.shared
     var body: some Scene {
-        Settings {
-            RootView().environmentObject(model).frame(idealWidth: 1060, idealHeight: 790)
-        }
         MenuBarExtra {
             MenuContent().environmentObject(model)
         } label: {
-            Image(systemName: model.config.enabled ? "paperplane.circle.fill" : "paperplane.circle")
+            Image(systemName: model.effectiveFilterEnabled ? "paperplane.circle.fill" : "paperplane.circle")
                 .accessibilityLabel("Telegram Focus")
                 .help("Telegram Focus")
         }
@@ -48,10 +48,22 @@ struct MenuContent: View {
         Text(model.connected ? "Telegram: \(model.accountName)" : model.statusText)
         Toggle("Фильтр включён", isOn: $model.config.enabled)
             .onChange(of: model.config.enabled) { model.saveConfig() }
+        if model.config.onlyDuringFocus {
+            Text(model.focusActive == true ? "Фокусирование включено" :
+                model.focusActive == false ? "Пауза вне фокусирования" : "Пауза: статус фокусирования недоступен")
+        } else {
+            Text("Ручной режим: возможны дубли с Telegram")
+        }
         Text("Пропущено: \(model.passed) · Заглушено: \(model.suppressed)")
         Divider()
-        SettingsLink { Text("Открыть настройки…") }
-            .simultaneousGesture(TapGesture().onEnded { NSApp.activate(ignoringOtherApps: true) })
+        Button("Открыть настройки…") {
+            // Open after the menu closes; retain and reuse the window after closing it.
+            DispatchQueue.main.async {
+                SettingsWindowController.shared.show {
+                    NSHostingController(rootView: RootView().environmentObject(model))
+                }
+            }
+        }.keyboardShortcut(",")
         Button("Тестовое уведомление") { model.requestNotifications(test: true) }
         Divider()
         Button("Завершить Telegram Focus") { NSApplication.shared.terminate(nil) }.keyboardShortcut("q")

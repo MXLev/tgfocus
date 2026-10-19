@@ -39,6 +39,16 @@ Check that the menu-bar icon appears, settings open, and rule simulation works w
 
 The CI job validates the DMG automatically, but only this test on your Mac validates the visible installer, downloaded-app security prompts, and notification permissions. Uploading a CI artifact does not publish a GitHub Release.
 
+### Launch, update, and notification regression checks
+
+- Open settings from the menu bar, close them, and open them again. Closing settings must not stop filtering.
+- Try launching the app directly from the read-only DMG: it should explain installation and exit before starting a worker or loading credentials.
+- With an installed copy running, launch a second copy from a different writable folder. It should explain how to quit the first copy and exit without starting another worker.
+- Confirm the default automatic Focus option requests status access once. With access, toggle macOS Focus and verify TGFocus pauses/resumes without Shortcuts. Denied or unknown Focus status must suppress notifications with an explanation. Availability of this public API in an ad-hoc-signed build is a required manual check; CI tests the delivery policy, not OS permission availability.
+- Disable automatic mode: expect a duplicate-notification warning and Cancel/Confirm options. Cancel must preserve automatic mode; confirm must persist manual mode after restart.
+- Check mention-only and reply-only switches independently, including a reply that also explicitly mentions you. Muted chats must remain silent even when other rules match; check inherited group/channel mute settings as well.
+- While the app is running, a source build must refuse to replace it. After quitting, the build must succeed. Python tests exercise copy/validation failures, rollback, and lock contention.
+
 ### Release checklist
 
 1. Run the full macOS build and DMG smoke test above, or download the successful CI run's DMG artifact.

@@ -9,6 +9,7 @@ import subprocess
 import struct
 import sys
 from pathlib import Path
+from build_support import app_update_lock, ensure_app_stopped, install_app, runtime_directory
 
 SOURCE = Path(__file__).resolve().parent
 PRODUCT = SOURCE.parent
@@ -27,6 +28,9 @@ def main():
     parser.add_argument("--helper-dir", type=Path, help="Reuse a previously packaged worker")
     parser.add_argument("--build-dir", type=Path, help="Directory for intermediate files")
     args = parser.parse_args()
+    app = PRODUCT / "Telegram Focus.app"
+    with app_update_lock(runtime_directory()):
+        ensure_app_stopped(app)
     if args.build_dir: BUILD = args.build_dir.resolve()
     BUILD.mkdir(parents=True, exist_ok=True)
     venv = args.env.resolve() if args.env else BUILD / "venv"
@@ -41,11 +45,11 @@ def main():
     if not args.swift_binary:
         run("swiftc", "-swift-version", "5", "-target", "arm64-apple-macosx14.0", "-O",
             "-module-cache-path", BUILD / "swift-cache", "-framework", "AppKit", "-framework", "SwiftUI",
-            "-framework", "UserNotifications", "-framework", "Security", "-framework", "CoreImage",
-            SOURCE / "App/Models.swift", SOURCE / "App/Views.swift", SOURCE / "App/TelegramFocus.swift", "-o", swift)
+            "-framework", "UserNotifications", "-framework", "Security", "-framework", "CoreImage", "-framework", "Intents",
+            SOURCE / "App/Models.swift", SOURCE / "App/Views.swift", SOURCE / "App/SettingsWindowController.swift", SOURCE / "App/TelegramFocus.swift", "-o", swift)
     run("swiftc", "-swift-version", "5", "-module-cache-path", BUILD / "swift-cache",
-        "-framework", "AppKit", "-framework", "SwiftUI", "-framework", "UserNotifications", "-framework", "Security", "-framework", "CoreImage",
-        SOURCE / "App/Models.swift", SOURCE / "tests/NativeTests.swift", "-o", BUILD / "native-tests")
+        "-framework", "AppKit", "-framework", "SwiftUI", "-framework", "UserNotifications", "-framework", "Security", "-framework", "CoreImage", "-framework", "Intents",
+        SOURCE / "App/Models.swift", SOURCE / "App/SettingsWindowController.swift", SOURCE / "tests/NativeTests.swift", "-o", BUILD / "native-tests")
     run(BUILD / "native-tests")
     helper = args.helper_dir.resolve() if args.helper_dir else BUILD / "dist/focus-worker"
     if not args.helper_dir:
@@ -53,7 +57,6 @@ def main():
             "--distpath", BUILD / "dist", "--workpath", BUILD / "pyinstaller-work", "--specpath", BUILD,
             "--paths", SOURCE / "Helper", SOURCE / "Helper/worker.py", env=env)
     run(python, SOURCE / "tests/smoke_worker.py", helper / "focus-worker")
-    app = PRODUCT / "Telegram Focus.app"
     # Build in a separate location and swap only after all checks pass.
     staged = BUILD / "Telegram Focus.app"
     if staged.exists(): shutil.rmtree(staged)
@@ -65,7 +68,8 @@ def main():
     shutil.copytree(helper, resources / "helper", symlinks=True)
     plist = dict(CFBundleExecutable="TelegramFocus", CFBundleIdentifier="local.mxlev.TelegramFocus",
                  CFBundleName="Telegram Focus", CFBundleDisplayName="Telegram Focus", CFBundlePackageType="APPL",
-                 CFBundleShortVersionString="1.3.0", CFBundleVersion="4", CFBundleIconFile="AppIcon", LSUIElement=True,
+                 CFBundleShortVersionString="1.4.0", CFBundleVersion="5", CFBundleIconFile="AppIcon", LSUIElement=True,
+                 NSFocusStatusUsageDescription="TGFocus использует статус фокусирования, чтобы автоматически приостанавливать свои уведомления вне режима фокусирования.",
                  LSMinimumSystemVersion="14.0", NSHighResolutionCapable=True,
                  NSSupportsAutomaticTermination=False, NSPrincipalClass="NSApplication")
     with (contents / "Info.plist").open("wb") as stream: plistlib.dump(plist, stream)
@@ -87,8 +91,7 @@ def main():
     run(python, SOURCE / "collect_licenses.py", resources / "Licenses")
     run("codesign", "--force", "--deep", "--sign", "-", "--identifier", "local.mxlev.TelegramFocus", staged)
     run("codesign", "--verify", "--deep", "--strict", staged)
-    if app.exists(): shutil.rmtree(app)
-    shutil.copytree(staged, app, symlinks=True)
+    install_app(staged, app, lambda candidate: run("codesign", "--verify", "--deep", "--strict", candidate))
     shutil.rmtree(staged)
     print(f"\nReady: {app}")
 

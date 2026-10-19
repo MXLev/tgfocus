@@ -1,9 +1,52 @@
 import Foundation
 import CoreImage
+import Darwin
+import AppKit
 
 @main
 struct NativeTests {
-    static func main() throws {
+    @MainActor static func main() throws {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.accessory)
+        let settings = SettingsWindowController()
+        var creations = 0
+        func content() -> NSViewController {
+            creations += 1
+            let controller = NSViewController()
+            controller.view = NSView(frame: NSRect(x: 0, y: 0, width: 1060, height: 790))
+            return controller
+        }
+        settings.show(makeContent: content)
+        let originalWindow = settings.window!
+        precondition(originalWindow.isVisible)
+        originalWindow.close()
+        precondition(!originalWindow.isVisible)
+        settings.show(makeContent: content)
+        precondition(settings.window === originalWindow && originalWindow.isVisible && creations == 1)
+        originalWindow.close()
+        for enabled in [true, false] {
+            for automatic in [true, false] {
+                let focusStates: [Bool?] = [true, false, nil]
+                for focused in focusStates {
+                    precondition(AppModel.shouldNotify(enabled: enabled, onlyDuringFocus: automatic, focused: focused)
+                        == (enabled && (!automatic || focused == true)))
+                }
+            }
+        }
+        let lockDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: lockDirectory) }
+        do {
+            let first = try RuntimeLock(directory: lockDirectory)
+            try withExtendedLifetime(first) {
+                do {
+                    _ = try RuntimeLock(directory: lockDirectory)
+                    fatalError("Second app instance acquired the same lock")
+                } catch let error as POSIXError {
+                    precondition(error.code.rawValue == EWOULDBLOCK)
+                }
+            }
+        }
+        _ = try RuntimeLock(directory: lockDirectory) // Lock is released when the first copy exits.
         let decoder = LineDecoder()
         let text = "{\"type\":\"message\",\"text\":\"Срочно 📨\"}\n{\"type\":\"ready\"}\n"
         var messages: [[String: Any]] = []
@@ -26,13 +69,30 @@ struct NativeTests {
         precondition(raw["apiHash"] == nil && raw["session"] == nil)
         var legacy = raw
         legacy.removeValue(forKey: "allowMentions")
+        legacy.removeValue(forKey: "allowReplies")
+        legacy.removeValue(forKey: "onlyDuringFocus")
         let migrated = try JSONDecoder().decode(FilterConfig.self, from: JSONSerialization.data(withJSONObject: legacy))
         precondition(migrated.allowMentions)
+        precondition(migrated.allowReplies)
+        precondition(migrated.onlyDuringFocus)
         precondition(migrated.people == config.people && migrated.chats == config.chats)
         precondition(migrated.keywords == config.keywords)
         config.allowMentions = false
         let disabledMentions = try JSONDecoder().decode(FilterConfig.self, from: JSONEncoder().encode(config))
         precondition(!disabledMentions.allowMentions)
+        var oldDisabled = raw
+        oldDisabled["allowMentions"] = false
+        oldDisabled.removeValue(forKey: "allowReplies")
+        oldDisabled.removeValue(forKey: "onlyDuringFocus")
+        let migratedDisabled = try JSONDecoder().decode(FilterConfig.self, from: JSONSerialization.data(withJSONObject: oldDisabled))
+        precondition(!migratedDisabled.allowMentions && !migratedDisabled.allowReplies && migratedDisabled.onlyDuringFocus)
+        config.allowReplies = false
+        config.onlyDuringFocus = true
+        let savedOptions = try JSONDecoder().decode(FilterConfig.self, from: JSONEncoder().encode(config))
+        precondition(!savedOptions.allowMentions && !savedOptions.allowReplies && savedOptions.onlyDuringFocus)
+        config.onlyDuringFocus = false
+        let savedManual = try JSONDecoder().decode(FilterConfig.self, from: JSONEncoder().encode(config))
+        precondition(!savedManual.onlyDuringFocus)
         let fakeURL = "tg://login?token=TEST_NOT_A_REAL_TOKEN"
         guard let qr = QRRenderer.image(for: fakeURL) else { fatalError("QR image generation failed") }
         guard let tiff = qr.tiffRepresentation, let image = CIImage(data: tiff) else { fatalError("QR image serialization failed") }
@@ -41,6 +101,12 @@ struct NativeTests {
         guard let result = detector.features(in: image).first as? CIQRCodeFeature else { fatalError("QR image decoding failed") }
         precondition(result.messageString == fakeURL)
         precondition(QRRenderer.image(for: "https://example.org") == nil)
+        for suffix in ["", "token&extra=1", "token fragment", "token#fragment", "token%20"] {
+            precondition(QRRenderer.image(for: "tg://login?token=" + suffix) == nil)
+        }
+        print("Native startup lock: duplicate instance rejected, lock released after exit OK")
+        print("Native settings window: opens and reopens the same retained window OK")
+        print("Native Focus gate: manual pause, active/inactive/unknown status and config migration OK")
         print("Native checks: split Unicode IPC, invalid frames, config persistence and secret separation OK")
         print("Native QR rendering: generated image decodes to the exact login URI OK")
     }
