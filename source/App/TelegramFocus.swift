@@ -49,8 +49,7 @@ struct MenuContent: View {
         Toggle("Фильтр включён", isOn: $model.config.enabled)
             .onChange(of: model.config.enabled) { model.saveConfig() }
         if model.config.onlyDuringFocus {
-            Text(model.focusActive == true ? "Фокусирование включено" :
-                model.focusActive == false ? "Пауза вне фокусирования" : "Пауза: статус фокусирования недоступен")
+            Text(model.effectiveFilterEnabled ? "Авто-режим: неотложные уведомления" : "Авто-режим: пауза — подробнее в настройках")
         } else {
             Text("Ручной режим: возможны дубли с Telegram")
         }

@@ -1,4 +1,5 @@
 from pathlib import Path
+import importlib.util
 import subprocess
 import sys
 import tempfile
@@ -100,3 +101,53 @@ class InstallationTests(unittest.TestCase):
                         ensure_app_stopped(self.app)
                 else:
                     ensure_app_stopped(self.app)
+
+
+class BuildLifetimeTests(unittest.TestCase):
+    def test_shared_lock_covers_every_build_stage_and_final_installation(self):
+        spec = importlib.util.spec_from_file_location('tgfocus_build_test', Path(__file__).resolve().parents[1] / 'build.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            source.mkdir()
+            (root / 'README.md').write_text('test')
+            helper = root / 'helper'
+            helper.mkdir()
+            (helper / 'focus-worker').write_text('worker')
+            swift = root / 'TelegramFocus'
+            swift.write_text('app')
+            python = root / 'venv/bin/python'
+            python.parent.mkdir(parents=True)
+            python.touch()
+            lock_directory = root / 'runtime'
+            commands = []
+
+            def run(*args, **kwargs):
+                # A concurrent app or build must fail to acquire the real OS lock
+                # at every subprocess stage, including final signature checks.
+                with self.assertRaises(RuntimeError):
+                    with app_update_lock(lock_directory):
+                        pass
+                commands.append(tuple(str(arg) for arg in args))
+                if str(args[0]) == 'swiftc':
+                    Path(args[args.index('-o') + 1]).write_text('binary')
+                if Path(args[0]).name == 'make-icon':
+                    directory = Path(args[-1])
+                    directory.mkdir()
+                    for size in [16, 32, 128, 256, 512]:
+                        for scale in ['', '@2x']:
+                            (directory / f'icon_{size}x{size}{scale}.png').write_bytes(b'PNG fixture')
+
+            with patch.object(module, 'SOURCE', source), patch.object(module, 'PRODUCT', root), \
+                 patch.object(module, 'runtime_directory', return_value=lock_directory), \
+                 patch.object(module, 'run', side_effect=run), \
+                 patch.object(sys, 'argv', ['build.py', '--build-dir', str(root / 'build'),
+                    '--env', str(python.parents[1]), '--swift-binary', str(swift), '--helper-dir', str(helper)]):
+                module.main()
+            self.assertTrue((root / 'Telegram Focus.app/Contents/Info.plist').is_file())
+            self.assertTrue(any(command[0] == 'codesign' for command in commands))
+            self.assertTrue(any('pip' in command for command in commands))
+            with app_update_lock(lock_directory):
+                pass  # The complete build released its lock.

@@ -182,9 +182,25 @@ class Worker:
         return settings
 
     async def is_chat_muted(self, event, kind):
-        from telethon.tl.types import InputNotifyPeer, InputNotifyUsers, InputNotifyChats, InputNotifyBroadcasts
+        from telethon.tl.types import InputNotifyPeer, InputNotifyUsers, InputNotifyChats, InputNotifyBroadcasts, InputNotifyForumTopic
         try:
             peer = await event.get_input_chat()
+            header = getattr(getattr(event, "message", None), "reply_to", None)
+            topic_id = None
+            if kind == "group":
+                if header and getattr(header, "forum_topic", False):
+                    topic_id = getattr(header, "reply_to_top_id", None) or getattr(header, "reply_to_msg_id", None)
+                elif getattr(getattr(event, "chat", None), "forum", False):
+                    topic_id = 1  # General topic has no forum reply header.
+            if topic_id is not None:
+                topic = await self.notification_settings(("topic", event.chat_id, topic_id), InputNotifyForumTopic(peer, topic_id))
+                if topic is None:
+                    return None
+                until = topic.mute_until
+                if until is not None:
+                    if until.tzinfo is None:
+                        until = until.replace(tzinfo=timezone.utc)
+                    return until > datetime.now(timezone.utc)
             settings = await self.notification_settings(("peer", event.chat_id), InputNotifyPeer(peer))
             if settings is None:
                 return None

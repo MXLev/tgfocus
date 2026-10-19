@@ -36,28 +36,33 @@ def app_update_lock(directory):
 def install_app(staged, app, validate, directory=None):
     """Copy/validate first; retain the previous bundle until replacement succeeds."""
     with app_update_lock(directory if directory is not None else runtime_directory()):
-        ensure_app_stopped(app)  # Also detects older versions without runtime.lock.
-        if app.is_symlink():
-            raise RuntimeError("Путь приложения является символической ссылкой; замените приложение вручную.")
-        work = Path(tempfile.mkdtemp(prefix=".tgfocus-install-", dir=app.parent))
-        backup = work / "previous.app"
+        replace_app_under_lock(staged, app, validate)
+
+
+def replace_app_under_lock(staged, app, validate):
+    """Replace a bundle while the caller holds app_update_lock for its build."""
+    ensure_app_stopped(app)  # Also detects older versions without runtime.lock.
+    if app.is_symlink():
+        raise RuntimeError("Путь приложения является символической ссылкой; замените приложение вручную.")
+    work = Path(tempfile.mkdtemp(prefix=".tgfocus-install-", dir=app.parent))
+    backup = work / "previous.app"
+    try:
+        replacement = Path(work) / app.name
+        shutil.copytree(staged, replacement, symlinks=True)
+        validate(replacement)
+        ensure_app_stopped(app)
+        had_previous = app.exists()
+        if had_previous:
+            app.rename(backup)
         try:
-            replacement = Path(work) / app.name
-            shutil.copytree(staged, replacement, symlinks=True)
-            validate(replacement)
-            ensure_app_stopped(app)
-            had_previous = app.exists()
+            replacement.rename(app)
+        except OSError:
             if had_previous:
-                app.rename(backup)
-            try:
-                replacement.rename(app)
-            except OSError:
-                if had_previous:
-                    backup.rename(app)
-                raise
-        finally:
-            # If rollback itself failed, retain the only copy for recovery.
-            if backup.exists() and not app.exists():
-                print(f"Предыдущая версия сохранена для восстановления: {backup}", file=sys.stderr)
-            else:
-                shutil.rmtree(work)
+                backup.rename(app)
+            raise
+    finally:
+        # If rollback itself failed, retain the only copy for recovery.
+        if backup.exists() and not app.exists():
+            print(f"Предыдущая версия сохранена для восстановления: {backup}", file=sys.stderr)
+        else:
+            shutil.rmtree(work)

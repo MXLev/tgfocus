@@ -36,6 +36,14 @@ hdiutil detach "$mount_point"
 mounted=false
 app="$test_root/Telegram Focus.app"
 codesign --verify --deep --strict "$app"
+codesign --display --entitlements :- "$app" > "$test_root/entitlements.plist"
+python3 - "$test_root/entitlements.plist" <<'PY'
+import plistlib
+import sys
+with open(sys.argv[1], 'rb') as stream:
+    assert plistlib.load(stream).get('com.apple.developer.usernotifications.time-sensitive') is True
+print('App declares the time-sensitive notification entitlement')
+PY
 test -x "$app/Contents/MacOS/TelegramFocus"
 python3 "$repo_root/source/tests/smoke_worker.py" \
   "$app/Contents/Resources/helper/focus-worker"

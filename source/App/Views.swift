@@ -171,8 +171,13 @@ struct OverviewView: View {
                 }
             if model.config.onlyDuringFocus {
                 Text(model.focusStatusText).font(.callout)
-                Text("Нужен доступ к статусу фокусирования. macOS сообщает общий статус, без названия режима. Если статус недоступен, TGFocus не отправляет уведомления.")
+                Text("Не добавляй TGFocus в разрешённые приложения фокусирования. Разреши ему неотложные уведомления в настройках уведомлений macOS и их доставку в нужном режиме фокусирования. Обычный Telegram оставь заглушённым.")
                     .font(.caption).foregroundStyle(.secondary)
+                if !model.timeSensitiveAllowed {
+                    Text("Неотложные уведомления не разрешены — авто-доставка приостановлена.")
+                        .font(.callout).foregroundStyle(.orange)
+                    Button("Открыть настройки уведомлений") { model.openSettings("com.apple.Notifications-Settings.extension") }
+                }
             } else {
                 Text("Ручной режим: если Telegram тоже показывает уведомления, возможны дубли. Выключай фильтр TGFocus, когда пользуешься обычными уведомлениями Telegram.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -576,8 +581,8 @@ struct GuideView: View {
                 .font(.callout).foregroundStyle(.secondary)
             Button("К подключению →") { model.selectedPage = "connection" }.buttonStyle(.link)
         }
-        Panel(title: "2. Разреши Telegram Focus в фокусировании", icon: "moon") {
-            Text("Системные настройки → Фокусирование → выбери или создай режим → Разрешённые приложения. Добавь Telegram Focus в список разрешённых. Обычный Telegram туда не добавляй.")
+        Panel(title: "2. Настрой неотложные уведомления", icon: "moon") {
+            Text("В Системных настройках → Уведомления → Telegram Focus разреши неотложные уведомления. Затем разреши их доставку в нужном режиме фокусирования. TGFocus не добавляй в разрешённые приложения: иначе статус Apple не покажет ему включённое фокусирование. Если уже добавил, убери.")
                 .font(.callout).foregroundStyle(.secondary)
             Text("Если у обычного Telegram включён обход фокусирования через неотложные уведомления, отключи его для этого режима. Иначе часть уведомлений может пройти в обход фильтра.")
                 .font(.caption).foregroundStyle(.secondary)

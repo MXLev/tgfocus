@@ -9,7 +9,7 @@ import subprocess
 import struct
 import sys
 from pathlib import Path
-from build_support import app_update_lock, ensure_app_stopped, install_app, runtime_directory
+from build_support import app_update_lock, ensure_app_stopped, replace_app_under_lock, runtime_directory
 
 SOURCE = Path(__file__).resolve().parent
 PRODUCT = SOURCE.parent
@@ -28,10 +28,15 @@ def main():
     parser.add_argument("--helper-dir", type=Path, help="Reuse a previously packaged worker")
     parser.add_argument("--build-dir", type=Path, help="Directory for intermediate files")
     args = parser.parse_args()
-    app = PRODUCT / "Telegram Focus.app"
-    with app_update_lock(runtime_directory()):
-        ensure_app_stopped(app)
     if args.build_dir: BUILD = args.build_dir.resolve()
+    # One lock protects all shared build outputs and the final installation.
+    with app_update_lock(runtime_directory()):
+        build(args)
+
+
+def build(args):
+    app = PRODUCT / "Telegram Focus.app"
+    ensure_app_stopped(app)
     BUILD.mkdir(parents=True, exist_ok=True)
     venv = args.env.resolve() if args.env else BUILD / "venv"
     python = venv / "bin/python"
@@ -90,8 +95,12 @@ def main():
     shutil.copy2(PRODUCT / "README.md", resources / "README.md")
     run(python, SOURCE / "collect_licenses.py", resources / "Licenses")
     run("codesign", "--force", "--deep", "--sign", "-", "--identifier", "local.mxlev.TelegramFocus", staged)
+    # Apply the notification entitlement only to the outer app, not to Python's
+    # nested binaries and libraries already signed by the preceding command.
+    run("codesign", "--force", "--sign", "-", "--identifier", "local.mxlev.TelegramFocus",
+        "--entitlements", SOURCE / "App/Entitlements.plist", staged)
     run("codesign", "--verify", "--deep", "--strict", staged)
-    install_app(staged, app, lambda candidate: run("codesign", "--verify", "--deep", "--strict", candidate))
+    replace_app_under_lock(staged, app, lambda candidate: run("codesign", "--verify", "--deep", "--strict", candidate))
     shutil.rmtree(staged)
     print(f"\nReady: {app}")
 

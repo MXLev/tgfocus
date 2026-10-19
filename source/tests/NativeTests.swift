@@ -2,6 +2,7 @@ import Foundation
 import CoreImage
 import Darwin
 import AppKit
+import UserNotifications
 
 @main
 struct NativeTests {
@@ -28,11 +29,16 @@ struct NativeTests {
             for automatic in [true, false] {
                 let focusStates: [Bool?] = [true, false, nil]
                 for focused in focusStates {
-                    precondition(AppModel.shouldNotify(enabled: enabled, onlyDuringFocus: automatic, focused: focused)
-                        == (enabled && (!automatic || focused == true)))
+                    for timeSensitive in [true, false] {
+                        precondition(AppModel.shouldNotify(enabled: enabled, onlyDuringFocus: automatic,
+                            focused: focused, timeSensitiveAllowed: timeSensitive)
+                            == (enabled && (!automatic || (focused == true && timeSensitive))))
+                    }
                 }
             }
         }
+        precondition(AppModel.notificationLevel(automatic: true) == .timeSensitive)
+        precondition(AppModel.notificationLevel(automatic: false) == .active)
         let lockDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: lockDirectory) }
         do {
