@@ -41,8 +41,11 @@ enum FocusAutomation {
     static let hasSigningTeam: Bool = {
         var code: SecCode?
         guard SecCodeCopySelf(SecCSFlags(rawValue: 0), &code) == errSecSuccess, let code else { return false }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, SecCSFlags(rawValue: 0), &staticCode) == errSecSuccess,
+              let staticCode else { return false }
         var information: CFDictionary?
-        guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation),
+        guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation),
                                             &information) == errSecSuccess,
               let values = information as? [String: Any],
               let team = values[kSecCodeInfoTeamIdentifier as String] as? String else { return false }
