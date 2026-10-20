@@ -133,10 +133,6 @@ class BuildLifetimeTests(unittest.TestCase):
                 commands.append(tuple(str(arg) for arg in args))
                 if str(args[0]) == 'swiftc':
                     Path(args[args.index('-o') + 1]).write_text('binary')
-                if 'appintentsmetadataprocessor' in args:
-                    metadata = Path(args[args.index('--output') + 1]) / 'Metadata.appintents/extract.actionsdata'
-                    metadata.parent.mkdir()
-                    metadata.write_bytes(b'TGFocusFilter fixture')
                 if Path(args[0]).name == 'make-icon':
                     directory = Path(args[-1])
                     directory.mkdir()
@@ -147,13 +143,11 @@ class BuildLifetimeTests(unittest.TestCase):
             with patch.object(module, 'SOURCE', source), patch.object(module, 'PRODUCT', root), \
                  patch.object(module, 'runtime_directory', return_value=lock_directory), \
                  patch.object(module, 'run', side_effect=run), \
-                 patch.object(module.subprocess, 'check_output', side_effect=lambda args, **kwargs: 'Build version TEST' if args[0] == 'xcodebuild' else '/test/Xcode'), \
                  patch.object(sys, 'argv', ['build.py', '--build-dir', str(root / 'build'),
                     '--env', str(python.parents[1]), '--swift-binary', str(swift), '--helper-dir', str(helper)]):
                 module.main()
             self.assertTrue((root / 'Telegram Focus.app/Contents/Info.plist').is_file())
             self.assertTrue(any(command[0] == 'codesign' for command in commands))
-            self.assertTrue(any('appintentsmetadataprocessor' in command for command in commands))
             self.assertTrue(any('pip' in command for command in commands))
             with app_update_lock(lock_directory):
                 pass  # The complete build released its lock.

@@ -57,21 +57,15 @@ def build(args):
     swift = args.swift_binary.resolve() if args.swift_binary else BUILD / "TelegramFocus"
     env = dict(os.environ, PYINSTALLER_CONFIG_DIR=str(BUILD / "pyinstaller-cache"))
     sources = [SOURCE / f"App/{name}.swift" for name in
-               ("Models", "Views", "SettingsWindowController", "FocusAutomation", "TelegramFocus")]
-    # Focus Filters need extracted App Intents metadata, not only linked Swift code.
-    protocols = BUILD / "intent-protocols.json"
-    protocols.write_text('["AppIntent", "SetFocusFilterIntent"]')
-    const_values = BUILD / "TelegramFocus.swiftconstvalues"
+               ("Models", "Views", "SettingsWindowController", "FilterPresentation", "TelegramFocus")]
     if not args.swift_binary:
-        run("swiftc", "-module-name", "TelegramFocus", "-whole-module-optimization",
-            "-emit-const-values-path", const_values,
-            "-Xfrontend", "-const-gather-protocols-file", "-Xfrontend", protocols, "-swift-version", "5", "-target", "arm64-apple-macosx14.0", "-O",
+        run("swiftc", "-swift-version", "5", "-target", "arm64-apple-macosx14.0", "-O",
             "-module-cache-path", BUILD / "swift-cache", "-framework", "AppKit", "-framework", "SwiftUI",
-            "-framework", "UserNotifications", "-framework", "Security", "-framework", "CoreImage", "-framework", "AppIntents",
+            "-framework", "UserNotifications", "-framework", "Security", "-framework", "CoreImage",
             *sources, "-o", swift)
     run("swiftc", "-swift-version", "5", "-module-cache-path", BUILD / "swift-cache",
-        "-framework", "AppKit", "-framework", "SwiftUI", "-framework", "UserNotifications", "-framework", "Security", "-framework", "CoreImage", "-framework", "AppIntents",
-        SOURCE / "App/Models.swift", SOURCE / "App/SettingsWindowController.swift", SOURCE / "App/FocusAutomation.swift", SOURCE / "tests/NativeTests.swift", "-o", BUILD / "native-tests")
+        "-framework", "AppKit", "-framework", "SwiftUI", "-framework", "UserNotifications", "-framework", "Security", "-framework", "CoreImage",
+        SOURCE / "App/Models.swift", SOURCE / "App/SettingsWindowController.swift", SOURCE / "App/FilterPresentation.swift", SOURCE / "tests/NativeTests.swift", "-o", BUILD / "native-tests")
     run(BUILD / "native-tests")
     helper = args.helper_dir.resolve() if args.helper_dir else BUILD / "dist/focus-worker"
     if not args.helper_dir:
@@ -90,7 +84,7 @@ def build(args):
     shutil.copytree(helper, resources / "helper", symlinks=True)
     plist = dict(CFBundleExecutable="TelegramFocus", CFBundleIdentifier="local.mxlev.TelegramFocus",
                  CFBundleName="Telegram Focus", CFBundleDisplayName="Telegram Focus", CFBundlePackageType="APPL",
-                 CFBundleShortVersionString="1.4.0", CFBundleVersion="7", CFBundleIconFile="AppIcon", LSUIElement=True,
+                 CFBundleShortVersionString="1.4.0", CFBundleVersion="8", CFBundleIconFile="AppIcon", LSUIElement=True,
                  LSMinimumSystemVersion="14.0", NSHighResolutionCapable=True,
                  NSSupportsAutomaticTermination=False, NSPrincipalClass="NSApplication")
     with (contents / "Info.plist").open("wb") as stream: plistlib.dump(plist, stream)
@@ -110,27 +104,6 @@ def build(args):
     (resources / "AppIcon.icns").write_bytes(b"icns" + struct.pack(">I", len(payload) + 8) + payload)
     shutil.copy2(PRODUCT / "README.md", resources / "README.md")
     run(python, SOURCE / "collect_licenses.py", resources / "Licenses")
-    source_list = BUILD / "intent-sources.list"
-    source_list.write_text("\n".join(map(str, sources)) + "\n")
-    values_list = BUILD / "intent-values.list"
-    values_list.write_text(str(const_values) + "\n")
-    empty_list = BUILD / "intent-empty.list"
-    empty_list.write_text("")
-    developer = subprocess.check_output(["xcode-select", "-p"], text=True).strip()
-    sdk = subprocess.check_output(["xcrun", "--show-sdk-path"], text=True).strip()
-    xcode_version = subprocess.check_output(["xcodebuild", "-version"], text=True).splitlines()[-1].split()[-1]
-    run("xcrun", "appintentsmetadataprocessor",
-        "--toolchain-dir", Path(developer) / "Toolchains/XcodeDefault.xctoolchain",
-        "--module-name", "TelegramFocus", "--sdk-root", sdk, "--xcode-version", xcode_version,
-        "--platform-family", "macOS", "--deployment-target", "14.0",
-        "--bundle-identifier", "local.mxlev.TelegramFocus", "--output", resources,
-        "--target-triple", "arm64-apple-macos14.0", "--binary-file", contents / "MacOS/TelegramFocus",
-        "--source-file-list", source_list, "--swift-const-vals-list", values_list,
-        "--metadata-file-list", empty_list, "--static-metadata-file-list", empty_list,
-        "--compile-time-extraction", "--deployment-aware-processing", "--no-app-shortcuts-localization")
-    metadata = resources / "Metadata.appintents/extract.actionsdata"
-    if not metadata.is_file() or b"TGFocusFilter" not in metadata.read_bytes():
-        raise RuntimeError("Focus Filter metadata was not generated; refusing to distribute a broken auto mode")
     run("codesign", "--force", "--deep", "--sign", "-", "--identifier", "local.mxlev.TelegramFocus", staged)
     run("codesign", "--verify", "--deep", "--strict", staged)
     replace_app_under_lock(staged, app, lambda candidate: run("codesign", "--verify", "--deep", "--strict", candidate))

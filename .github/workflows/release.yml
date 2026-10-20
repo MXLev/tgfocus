@@ -10,10 +10,9 @@ permissions:
 
 jobs:
   build:
+    name: Build and test on macOS 15
     runs-on: macos-15
     timeout-minutes: 30
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -36,22 +35,40 @@ jobs:
             dist/TGFocus-unsigned-arm64.dmg
             dist/TGFocus-unsigned-arm64.dmg.sha256
           if-no-files-found: error
+  macos26:
+    name: Test release DMG on macOS 26
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          name: TGFocus-unsigned-arm64
+          path: dist
+      - run: bash source/tests/smoke_dmg.sh
+  draft:
+    name: Create draft from the verified DMG
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build, macos26]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: TGFocus-unsigned-arm64
+          path: dist
       - name: Create draft release
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          cat > "$RUNNER_TEMP/release-notes.md" <<'EOF'
-          Для Mac с Apple Silicon и macOS 14+. Скачайте TGFocus-unsigned-arm64.dmg, откройте его и перетащите Telegram Focus в Applications.
-
-          Сборка без Apple Developer ID и нотариального заверения: macOS может потребовать разрешить первый запуск через «Системные настройки → Конфиденциальность и безопасность → Всё равно открыть». Не отключайте Gatekeeper.
-
-          Python и Xcode для запуска не нужны. Для подключения Telegram нужны собственные API ID и API Hash.
-
-          Установка: https://github.com/MXLev/tgfocus/blob/main/INSTALL.ru.md
-          Альтернатива — клонировать репозиторий и собрать приложение: https://github.com/MXLev/tgfocus#установка
-          EOF
+          (cd dist && sha256sum -c TGFocus-unsigned-arm64.dmg.sha256)
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo 'A release already exists for this tag; refusing to replace its assets.' >&2
             exit 1
@@ -60,4 +77,4 @@ jobs:
             dist/TGFocus-unsigned-arm64.dmg \
             dist/TGFocus-unsigned-arm64.dmg.sha256 \
             --verify-tag --draft --title "TGFocus $RELEASE_TAG" \
-            --notes-file "$RUNNER_TEMP/release-notes.md"
+            --notes-file RELEASE_NOTES.md

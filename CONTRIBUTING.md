@@ -14,7 +14,7 @@ python3.13 -m venv .venv
 .venv/bin/python -m unittest discover -s source/tests -p 'test_*.py' -v
 ```
 
-Building the native app requires an Apple Silicon Mac, macOS 14+, Python 3.13, and full Xcode (including appintentsmetadataprocessor). To package a DMG, also install [Homebrew](https://brew.sh/) and GNU coreutils. These are build tools, not requirements for users installing the DMG:
+Building the native app requires an Apple Silicon Mac, macOS 14+, Python 3.13, and Xcode Command Line Tools. To package a DMG, also install [Homebrew](https://brew.sh/) and GNU coreutils. These are build tools, not requirements for users installing the DMG:
 
 ```sh
 python3.13 source/build.py
@@ -45,10 +45,8 @@ The CI job validates the DMG automatically, but only this test on your Mac valid
 - Try launching the app directly from the read-only DMG: it should explain installation and exit before starting a worker or loading credentials.
 - With an installed copy running, launch a second copy from a different writable folder. It should explain how to quit the first copy and exit without starting another worker.
 - The free ad-hoc build must launch without the restricted time-sensitive entitlement. CI verifies the installed app signature, starts its actual signed executable and worker, and opens/reopens settings on macOS 15 and 26 using the same DMG. This test uses an isolated data directory and does not access credentials or request notification permissions.
-- The free ad-hoc app must detect the missing signing Team ID via Security.framework and report native Focus Filters as unsupported. Preserve a saved automatic preference as paused until the user confirms manual mode; show settings on startup to explain. The guide must not direct ad-hoc users to the disabled Add button. Verify the confirmation works from the manual-mode button.
-- `SetFocusFilterIntent.current` remains available in code for builds with a signing team. Team ID is a prerequisite, not proof of integration: creating a filter in System Settings and real off/on transitions require a correctly signed interactive test. Do not count `.notFound` from an unregistered ad-hoc app as validation of automatic delivery.
-- Test the master switch from both settings and the menu: off must stop delivery, both labels must update, and the template menu icon must change between outlined and filled. An enabled master switch waiting for Focus must say so rather than appear broken. Manual mode still requires a duplicate-notification warning; confirm persists after restart.
-- CI validates generated App Intents metadata and verifies that the actual ad-hoc app reports unsupported signing on macOS 15 and 26. This is a fallback test; it does not validate creating or running a native Focus Filter.
+- This release has only manual filtering. New installs start with the master switch off. An old experimental `onlyDuringFocus: true` preference migrates to manual mode with the filter off, retaining rules and credentials. Existing manual preferences keep their enabled state. There must be no automatic-mode control, signing setup, or native Focus Filter instructions in the app.
+- Test the master switch from both settings and the menu: off must stop delivery, both labels must update, and the template menu icon must change between outlined and filled. For Focus use, allow TGFocus in Allowed Apps, mute ordinary Telegram, and turn the filter off manually before leaving Focus to avoid duplicates.
 - Check mention-only and reply-only switches independently, including a reply that also explicitly mentions you. Check inherited chat/category mute settings, a muted forum topic in an unmuted group, an explicitly unmuted topic, and the General topic.
 - While the app is running, a source build must refuse to replace it. Run two source builds concurrently: the second must stop before touching shared output. The runtime lock covers the entire first build through installation. Python tests exercise copy/validation failures, rollback, and lock contention throughout the build.
 
@@ -65,4 +63,4 @@ For security-sensitive reports, read [SECURITY.md](SECURITY.md). Keep discussion
 
 The installed-app smoke test closes settings, disables the master filter, and keeps the app and worker alive for 25 seconds without a Telegram account. It reports summed resident memory, memory change, and average CPU time for the app process tree after startup warmup as a GitHub Actions notice. This short disconnected sample does not prove the absence of long-term leaks or represent an active Telegram account.
 
-With the master switch off, Focus polling stops and the worker skips message/entity/mute processing and IPC events. The Telegram connection stays available for fast resumption; its keepalive/reconnect traffic remains. In a build with a signing team, when automatic mode waits for Focus the worker skips message processing while the app checks the native Focus Filter every two seconds. An ad-hoc app does not poll the unsupported API. Decision history and worker caches are bounded; the IPC decoder drops frames over 1 MiB and recovers at the next newline.
+With the master switch off, the worker skips message/entity/mute processing and IPC events. The Telegram connection stays available for fast resumption; its keepalive/reconnect traffic remains. No Focus status polling or App Intents registration runs in this release. Decision history and worker caches are bounded; the IPC decoder drops frames over 1 MiB and recovers at the next newline.

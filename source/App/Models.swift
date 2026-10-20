@@ -84,7 +84,7 @@ struct ChatRule: Codable, Identifiable, Equatable {
 }
 
 struct FilterConfig: Codable {
-    var enabled = true
+    var enabled = false
     var allPrivate = false
     var keywords = ["срочно", "позвони", "перезвони", "нужна помощь", "экстренно"]
     var people: [Person] = []
@@ -93,7 +93,9 @@ struct FilterConfig: Codable {
     var playSound = true
     var allowMentions = true
     var allowReplies = true
-    var onlyDuringFocus = true
+    // Retained only to migrate experimental preferences; the release is manual.
+    private(set) var onlyDuringFocus = false
+    private(set) var migratedFromAutomaticMode = false
 
     init() {}
 
@@ -103,7 +105,7 @@ struct FilterConfig: Codable {
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        enabled = try values.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        enabled = try values.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
         allPrivate = try values.decodeIfPresent(Bool.self, forKey: .allPrivate) ?? false
         keywords = try values.decodeIfPresent([String].self, forKey: .keywords) ?? keywords
         people = try values.decodeIfPresent([Person].self, forKey: .people) ?? []
@@ -113,7 +115,8 @@ struct FilterConfig: Codable {
         allowMentions = try values.decodeIfPresent(Bool.self, forKey: .allowMentions) ?? true
         // The old switch controlled both; preserve its value when migrating.
         allowReplies = try values.decodeIfPresent(Bool.self, forKey: .allowReplies) ?? allowMentions
-        onlyDuringFocus = try values.decodeIfPresent(Bool.self, forKey: .onlyDuringFocus) ?? true
+        migratedFromAutomaticMode = try values.decodeIfPresent(Bool.self, forKey: .onlyDuringFocus) ?? false
+        if migratedFromAutomaticMode { enabled = false }
     }
 }
 
@@ -249,10 +252,7 @@ final class AppModel: ObservableObject {
     @Published var simulationReason = ""
     @Published var selectedPage = "overview"
     @Published var showLogoutConfirmation = false
-    @Published private(set) var focusFilterState: FocusFilterState = .unavailable
-    @Published var focusStatusText = "Автоматический режим выключен"
-    private var focusPollingTask: Task<Void, Never>?
-    private var focusReadGeneration = 0
+    @Published var startupNotice = ""
     @Published var qrImage: NSImage?
     @Published var qrExpiresAt = Date.distantPast
     @Published var deliveryMethod = ""
@@ -266,26 +266,13 @@ final class AppModel: ObservableObject {
     private(set) var startupAllowed = false
 
     var connected: Bool { state == "connected" }
-    var effectiveFilterEnabled: Bool {
-        FilterPresentation.allowsDelivery(enabled: config.enabled, automatic: config.onlyDuringFocus,
-                                          focus: focusFilterState)
-    }
+    var effectiveFilterEnabled: Bool { config.enabled }
     var filterTitle: String { FilterPresentation.title(enabled: config.enabled) }
     var filterBinding: Binding<Bool> {
         Binding(get: { self.config.enabled }, set: { self.setFilterEnabled($0) })
     }
     func setFilterEnabled(_ enabled: Bool) {
         config.enabled = enabled
-        updateFocusAutomation()
-        saveConfig()
-    }
-    func setAutomaticMode(_ enabled: Bool) {
-        guard !enabled || FocusAutomation.hasSigningTeam else {
-            errorText = FocusAutomation.unsupportedMessage
-            return
-        }
-        config.onlyDuringFocus = enabled
-        updateFocusAutomation()
         saveConfig()
     }
     var authStep: Bool { ["phone", "code", "password", "qr", "qrExpired", "authUnsupported"].contains(state) }
@@ -311,6 +298,9 @@ final class AppModel: ObservableObject {
             configURL = root.appendingPathComponent("rules.json")
             if FileManager.default.fileExists(atPath: configURL!.path) {
                 config = try JSONDecoder().decode(FilterConfig.self, from: Data(contentsOf: configURL!))
+                if config.migratedFromAutomaticMode {
+                    startupNotice = "Настройки обновлены. Фильтр выключен — включи его вручную, когда будет нужно."
+                }
             }
         } catch { errorText = "Не удалось прочитать настройки: \(error.localizedDescription)" }
         do {
@@ -320,57 +310,7 @@ final class AppModel: ObservableObject {
             }
         } catch { errorText = error.localizedDescription }
         startHelper()
-        updateFocusAutomation()
         Task { await refreshNotificationStatus() }
-    }
-
-    @discardableResult func refreshFocusStatus() async -> FocusFilterState {
-        guard config.enabled, config.onlyDuringFocus else {
-            focusStatusText = config.enabled ? "Ручной режим" : "Фильтр выключен"
-            return .inactive
-        }
-        focusReadGeneration += 1
-        let generation = focusReadGeneration
-        let result = await FocusAutomation.read()
-        // Only the newest query updates presentation. Each delivery uses its own result.
-        guard config.enabled, config.onlyDuringFocus, generation == focusReadGeneration else { return result }
-        let changed = focusFilterState != result
-        focusFilterState = result
-        if changed { syncWorkerConfig() }
-        switch result {
-        case .active:
-            focusStatusText = "Фильтр фокусирования macOS активен"
-        case .inactive:
-            focusStatusText = "Ожидание фокусирования. Добавь TGFocus в «Фильтры фокусирования» нужного режима и включи в нём фильтр TGFocus."
-        case .unsupportedSigning:
-            focusStatusText = FocusAutomation.unsupportedMessage
-        case .unavailable:
-            focusStatusText = "macOS не предоставила состояние фильтра фокусирования. Доставка приостановлена; проверь настройку или выбери ручной режим."
-        }
-        return result
-    }
-
-    func updateFocusAutomation() {
-        focusPollingTask?.cancel()
-        focusPollingTask = nil
-        focusReadGeneration += 1
-        focusFilterState = .unavailable
-        if config.onlyDuringFocus && !FocusAutomation.hasSigningTeam {
-            focusFilterState = .unsupportedSigning
-            focusStatusText = FocusAutomation.unsupportedMessage
-            return
-        }
-        guard config.enabled, config.onlyDuringFocus, !Self.isStartupSmokeTest else {
-            focusStatusText = !config.enabled ? "Фильтр выключен" : (config.onlyDuringFocus ? "Ожидание фокусирования" : "Ручной режим")
-            return
-        }
-        focusPollingTask = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.refreshFocusStatus()
-                do { try await Task.sleep(for: .seconds(2)) }
-                catch { return }
-            }
-        }
     }
 
     func startHelper() {
@@ -543,27 +483,18 @@ final class AppModel: ObservableObject {
             simulationReason = object["reason"] as? String ?? ""
         case "message":
             guard config.enabled else { return }
-            // Rejected rules cannot deliver a banner; manual mode needs no Focus query.
-            guard config.onlyDuringFocus, object["allowed"] as? Bool == true else {
-                deliverMessage(object, focus: focusFilterState)
-                return
-            }
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                let focus = await self.refreshFocusStatus()
-                self.deliverMessage(object, focus: focus)
-            }
+            deliverMessage(object)
         default: break
         }
     }
 
-    func deliverMessage(_ object: [String: Any], focus: FocusFilterState) {
+    func deliverMessage(_ object: [String: Any]) {
         let ruleAllowed = object["allowed"] as? Bool ?? false
-        let deliveryEnabled = FilterPresentation.allowsDelivery(enabled: config.enabled, automatic: config.onlyDuringFocus, focus: focus)
+        let deliveryEnabled = config.enabled
         let allowed = ruleAllowed && deliveryEnabled
         let title = object["title"] as? String ?? "Telegram"
         let reason = ruleAllowed && !deliveryEnabled ?
-            (config.enabled ? focusStatusText : "Фильтр на паузе") : (object["reason"] as? String ?? "")
+            "Фильтр выключен" : (object["reason"] as? String ?? "")
         let url = object["url"] as? String ?? "tg://"
         if allowed { passed += 1 } else { suppressed += 1 }
         activities.insert(Activity(title: title, reason: reason, allowed: allowed, url: url), at: 0)
@@ -585,7 +516,6 @@ final class AppModel: ObservableObject {
         case .denied: notificationStatus = "Запрещены в macOS"
         default: notificationStatus = "Нужно разрешение"
         }
-        await refreshFocusStatus()
     }
 
     func requestNotifications(test: Bool = false) {
@@ -597,7 +527,7 @@ final class AppModel: ObservableObject {
                 await refreshNotificationStatus()
                 if allowed && test {
                     notify(title: "Telegram Focus", subtitle: "Проверка уведомлений",
-                        body: "Проверка доставки. Разреши TGFocus в выбранном фокусировании и заглуши обычный Telegram. Для авто-режима добавь TGFocus в «Фильтры фокусирования».",
+                        body: "Проверка доставки. Разреши TGFocus в выбранном фокусировании и заглуши обычный Telegram. Включай фильтр вручную и выключай его перед выходом из фокусирования.",
                         url: "", id: UUID().uuidString)
                 } else if !allowed {
                     errorText = "Разреши уведомления Telegram Focus в Системных настройках → Уведомления."
@@ -641,7 +571,6 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() {
-        focusPollingTask?.cancel()
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         if process?.isRunning == true {
             send(["command": "quit"])

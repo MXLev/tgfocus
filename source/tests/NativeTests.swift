@@ -25,45 +25,25 @@ struct NativeTests {
         settings.show(makeContent: content)
         precondition(settings.window === originalWindow && originalWindow.isVisible && creations == 1)
         originalWindow.close()
-        for enabled in [true, false] {
-            for automatic in [true, false] {
-                for focus: FocusFilterState in [.active, .inactive, .unavailable, .unsupportedSigning] {
-                    precondition(FilterPresentation.allowsDelivery(enabled: enabled, automatic: automatic, focus: focus)
-                                 == (enabled && (!automatic || focus == .active)))
-                }
-            }
-        }
         precondition(FilterPresentation.title(enabled: false) == "Фильтр выключен")
         precondition(FilterPresentation.title(enabled: true) == "Фильтр включён")
         let onIcon = FilterPresentation.icon(enabled: true)
         let offIcon = FilterPresentation.icon(enabled: false)
         precondition(onIcon.isTemplate && offIcon.isTemplate && onIcon.tiffRepresentation != offIcon.tiffRepresentation)
         let model = AppModel(startRuntime: false)
-        model.config.onlyDuringFocus = false
         model.filterBinding.wrappedValue = false // The settings control uses this binding.
         precondition(!model.config.enabled && !model.effectiveFilterEnabled && model.filterTitle == "Фильтр выключен")
         model.setFilterEnabled(true) // The menu uses the same setter.
         precondition(model.filterBinding.wrappedValue && model.effectiveFilterEnabled && model.filterTitle == "Фильтр включён")
         model.setFilterEnabled(false)
-        model.deliverMessage(["allowed": true, "title": "test"], focus: .active)
+        model.deliverMessage(["allowed": true, "title": "test"])
         precondition(model.passed == 0 && model.suppressed == 1)
-        model.config.enabled = true
-        model.config.onlyDuringFocus = true
-        model.deliverMessage(["allowed": true, "title": "test"], focus: .inactive)
-        model.deliverMessage(["allowed": true, "title": "test"], focus: .unavailable)
-        precondition(model.passed == 0 && model.suppressed == 3)
+        model.setFilterEnabled(true)
         model.receive(["type": "message", "allowed": false, "title": "test", "reason": "rule rejected"])
-        precondition(model.suppressed == 4 && model.activities.first?.reason == "rule rejected")
+        precondition(model.suppressed == 2 && model.activities.first?.reason == "rule rejected")
         model.setFilterEnabled(false)
         model.receive(["type": "message", "allowed": true, "title": "test"])
-        precondition(model.passed == 0 && model.suppressed == 4)
-        // Native tests and the free DMG have an ad-hoc signature, with no signing team.
-        precondition(!FocusAutomation.hasSigningTeam)
-        model.setAutomaticMode(false)
-        model.setAutomaticMode(true)
-        precondition(!model.config.onlyDuringFocus && model.errorText == FocusAutomation.unsupportedMessage)
-        // No configured/active Focus Filter must restore the inactive default.
-        precondition(TGFocusFilter().useFilter == false)
+        precondition(model.passed == 0 && model.suppressed == 2)
         let lockDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: lockDirectory) }
         do {
@@ -93,6 +73,8 @@ struct NativeTests {
         let recovered = oversizedDecoder.consume(Data("\n{\"type\":\"ok\"}\n".utf8))
         precondition(recovered.count == 1 && recovered[0]["type"] as? String == "ok")
         var config = FilterConfig()
+        precondition(!config.enabled && !config.onlyDuringFocus)
+        config.enabled = true
         config.people = [Person(id: "42", name: "Важный")]
         config.chats = [ChatRule(id: "-100123", name: "Учёба")]
         let data = try JSONEncoder().encode(config)
@@ -110,7 +92,7 @@ struct NativeTests {
         let migrated = try JSONDecoder().decode(FilterConfig.self, from: JSONSerialization.data(withJSONObject: legacy))
         precondition(migrated.allowMentions)
         precondition(migrated.allowReplies)
-        precondition(migrated.onlyDuringFocus)
+        precondition(!migrated.onlyDuringFocus && migrated.enabled)
         precondition(migrated.people == config.people && migrated.chats == config.chats)
         precondition(migrated.keywords == config.keywords)
         config.allowMentions = false
@@ -121,14 +103,18 @@ struct NativeTests {
         oldDisabled.removeValue(forKey: "allowReplies")
         oldDisabled.removeValue(forKey: "onlyDuringFocus")
         let migratedDisabled = try JSONDecoder().decode(FilterConfig.self, from: JSONSerialization.data(withJSONObject: oldDisabled))
-        precondition(!migratedDisabled.allowMentions && !migratedDisabled.allowReplies && migratedDisabled.onlyDuringFocus)
+        precondition(!migratedDisabled.allowMentions && !migratedDisabled.allowReplies && !migratedDisabled.onlyDuringFocus)
         config.allowReplies = false
-        config.onlyDuringFocus = true
         let savedOptions = try JSONDecoder().decode(FilterConfig.self, from: JSONEncoder().encode(config))
-        precondition(!savedOptions.allowMentions && !savedOptions.allowReplies && savedOptions.onlyDuringFocus)
-        config.onlyDuringFocus = false
-        let savedManual = try JSONDecoder().decode(FilterConfig.self, from: JSONEncoder().encode(config))
-        precondition(!savedManual.onlyDuringFocus)
+        precondition(!savedOptions.allowMentions && !savedOptions.allowReplies && savedOptions.enabled)
+        var oldAutomatic = raw
+        oldAutomatic["enabled"] = true
+        oldAutomatic["onlyDuringFocus"] = true
+        let paused = try JSONDecoder().decode(FilterConfig.self, from: JSONSerialization.data(withJSONObject: oldAutomatic))
+        precondition(!paused.enabled && !paused.onlyDuringFocus && paused.migratedFromAutomaticMode)
+        precondition(paused.people == config.people && paused.chats == config.chats && paused.keywords == config.keywords)
+        let persistedPause = try JSONDecoder().decode(FilterConfig.self, from: JSONEncoder().encode(paused))
+        precondition(!persistedPause.enabled && !persistedPause.migratedFromAutomaticMode)
         let fakeURL = "tg://login?token=TEST_NOT_A_REAL_TOKEN"
         guard let qr = QRRenderer.image(for: fakeURL) else { fatalError("QR image generation failed") }
         guard let tiff = qr.tiffRepresentation, let image = CIImage(data: tiff) else { fatalError("QR image serialization failed") }
@@ -142,7 +128,7 @@ struct NativeTests {
         }
         print("Native startup lock: duplicate instance rejected, lock released after exit OK")
         print("Native settings window: opens and reopens the same retained window OK")
-        print("Native Focus gate: manual pause, active/inactive/unknown status and config migration OK")
+        print("Native manual filter: shared controls, pause and safe legacy preference migration OK")
         print("Native checks: split Unicode IPC, invalid frames, config persistence and secret separation OK")
         print("Native QR rendering: generated image decodes to the exact login URI OK")
     }

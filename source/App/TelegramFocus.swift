@@ -9,14 +9,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         MainActor.assumeIsolated {
             if AppModel.isStartupSmokeTest {
                 Task { @MainActor in await self.runStartupSmokeTest() }
-            } else if AppModel.shared.startupAllowed {
-                AppModel.shared.updateFocusAutomation()
-                if AppModel.shared.config.onlyDuringFocus && !FocusAutomation.hasSigningTeam {
-                    SettingsWindowController.shared.show {
-                        NSHostingController(rootView: RootView().environmentObject(AppModel.shared))
-                    }
-                }
-
             }
         }
     }
@@ -29,11 +21,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         guard model.helperReady else {
             fputs("App startup smoke test: worker did not become ready\n", stderr)
-            model.shutdown()
-            exit(1)
-        }
-        guard !FocusAutomation.hasSigningTeam, await FocusAutomation.read() == .unsupportedSigning else {
-            fputs("App startup smoke test: ad-hoc signing must report Focus as unsupported\n", stderr)
             model.shutdown()
             exit(1)
         }
@@ -101,11 +88,7 @@ struct MenuContent: View {
     var body: some View {
         Text(model.connected ? "Telegram: \(model.accountName)" : model.statusText)
         Button(model.filterTitle) { model.setFilterEnabled(!model.config.enabled) }
-        if model.config.onlyDuringFocus {
-            Text(!FocusAutomation.hasSigningTeam ? "Авто-режим недоступен — открой настройки" : (model.effectiveFilterEnabled ? "Авто-режим: доставка включена" : (model.config.enabled ? "Авто-режим: ожидание фокусирования" : "Доставка выключена")))
-        } else {
-            Text("Ручной режим: возможны дубли с Telegram")
-        }
+        Text("Ручное управление фильтром")
         Text("Пропущено: \(model.passed) · Заглушено: \(model.suppressed)")
         Divider()
         Button("Открыть настройки…") {

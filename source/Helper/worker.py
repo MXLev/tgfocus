@@ -68,7 +68,7 @@ class Worker:
         self.client = TelegramClient(
             StringSession(request.get("session", "")), api_id, api_hash,
             device_model="Telegram Focus for Mac", system_version="macOS",
-            app_version="1.2.0", connection_retries=3, request_retries=2,
+            app_version="1.4.0", connection_retries=3, request_retries=2,
             retry_delay=2, timeout=10, flood_sleep_threshold=0,
         )
         self.client.add_event_handler(self.on_message, events.NewMessage(incoming=True))
