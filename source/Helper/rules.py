@@ -36,6 +36,10 @@ def decide(message, config):
         return Decision(False, "Служебное сообщение")
     if message.get("stale", False):
         return Decision(False, "Старое сообщение после переподключения")
+    if message.get("muteUnknown", False):
+        return Decision(False, "Не удалось проверить уведомления чата в Telegram")
+    if message.get("muted", False):
+        return Decision(False, "Уведомления чата выключены в Telegram")
     kind = message.get("kind", "private")
     chat_id, sender_id = str(message.get("chatId", "")), str(message.get("senderId", ""))
     match = keyword_match(message.get("text", ""), config.get("keywords", []))
@@ -48,7 +52,9 @@ def decide(message, config):
             return Decision(True, "Ключевое слово: " + match)
         return Decision(False, "Личное без ключевых слов")
     if kind == "group" and config.get("allowMentions", True) and message.get("mentioned", False):
-        return Decision(True, "Упоминание или ответ тебе")
+        return Decision(True, "Упоминание тебя")
+    if kind == "group" and config.get("allowReplies", config.get("allowMentions", True)) and message.get("replyToMe", False):
+        return Decision(True, "Ответ на твоё сообщение")
     for chat in config.get("chats", []):
         if str(chat["id"]) == chat_id:
             if not chat.get("keywordsOnly", True):

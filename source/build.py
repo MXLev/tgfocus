@@ -9,6 +9,7 @@ import subprocess
 import struct
 import sys
 from pathlib import Path
+from build_support import app_update_lock, ensure_app_stopped, replace_app_under_lock, runtime_directory
 
 SOURCE = Path(__file__).resolve().parent
 PRODUCT = SOURCE.parent
@@ -16,7 +17,16 @@ BUILD = SOURCE / ".build"
 
 
 def run(*args, **kwargs):
-    subprocess.run([str(a) for a in args], check=True, **kwargs)
+    command = [str(a) for a in args]
+    if command[0] == "swiftc" or (command[0] == "xcrun" and "appintentsmetadataprocessor" in command):
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **kwargs)
+        print(result.stdout, end="", flush=True)
+        if result.returncode:
+            message = result.stdout[-10000:].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+            print(f"::error title=Native build failed::{message}", flush=True)
+            raise subprocess.CalledProcessError(result.returncode, command)
+    else:
+        subprocess.run(command, check=True, **kwargs)
 
 
 def main():
@@ -28,6 +38,14 @@ def main():
     parser.add_argument("--build-dir", type=Path, help="Directory for intermediate files")
     args = parser.parse_args()
     if args.build_dir: BUILD = args.build_dir.resolve()
+    # One lock protects all shared build outputs and the final installation.
+    with app_update_lock(runtime_directory()):
+        build(args)
+
+
+def build(args):
+    app = PRODUCT / "Telegram Focus.app"
+    ensure_app_stopped(app)
     BUILD.mkdir(parents=True, exist_ok=True)
     venv = args.env.resolve() if args.env else BUILD / "venv"
     python = venv / "bin/python"
@@ -38,14 +56,16 @@ def main():
     run(python, "-m", "unittest", "discover", "-s", SOURCE / "tests", "-p", "test_*.py")
     swift = args.swift_binary.resolve() if args.swift_binary else BUILD / "TelegramFocus"
     env = dict(os.environ, PYINSTALLER_CONFIG_DIR=str(BUILD / "pyinstaller-cache"))
+    sources = [SOURCE / f"App/{name}.swift" for name in
+               ("Models", "Views", "SettingsWindowController", "FilterPresentation", "TelegramFocus")]
     if not args.swift_binary:
         run("swiftc", "-swift-version", "5", "-target", "arm64-apple-macosx14.0", "-O",
             "-module-cache-path", BUILD / "swift-cache", "-framework", "AppKit", "-framework", "SwiftUI",
             "-framework", "UserNotifications", "-framework", "Security", "-framework", "CoreImage",
-            SOURCE / "App/Models.swift", SOURCE / "App/Views.swift", SOURCE / "App/TelegramFocus.swift", "-o", swift)
+            *sources, "-o", swift)
     run("swiftc", "-swift-version", "5", "-module-cache-path", BUILD / "swift-cache",
         "-framework", "AppKit", "-framework", "SwiftUI", "-framework", "UserNotifications", "-framework", "Security", "-framework", "CoreImage",
-        SOURCE / "App/Models.swift", SOURCE / "tests/NativeTests.swift", "-o", BUILD / "native-tests")
+        SOURCE / "App/Models.swift", SOURCE / "App/SettingsWindowController.swift", SOURCE / "App/FilterPresentation.swift", SOURCE / "tests/NativeTests.swift", "-o", BUILD / "native-tests")
     run(BUILD / "native-tests")
     helper = args.helper_dir.resolve() if args.helper_dir else BUILD / "dist/focus-worker"
     if not args.helper_dir:
@@ -53,7 +73,6 @@ def main():
             "--distpath", BUILD / "dist", "--workpath", BUILD / "pyinstaller-work", "--specpath", BUILD,
             "--paths", SOURCE / "Helper", SOURCE / "Helper/worker.py", env=env)
     run(python, SOURCE / "tests/smoke_worker.py", helper / "focus-worker")
-    app = PRODUCT / "Telegram Focus.app"
     # Build in a separate location and swap only after all checks pass.
     staged = BUILD / "Telegram Focus.app"
     if staged.exists(): shutil.rmtree(staged)
@@ -65,7 +84,7 @@ def main():
     shutil.copytree(helper, resources / "helper", symlinks=True)
     plist = dict(CFBundleExecutable="TelegramFocus", CFBundleIdentifier="local.mxlev.TelegramFocus",
                  CFBundleName="Telegram Focus", CFBundleDisplayName="Telegram Focus", CFBundlePackageType="APPL",
-                 CFBundleShortVersionString="1.3.0", CFBundleVersion="4", CFBundleIconFile="AppIcon", LSUIElement=True,
+                 CFBundleShortVersionString="1.4.0", CFBundleVersion="8", CFBundleIconFile="AppIcon", LSUIElement=True,
                  LSMinimumSystemVersion="14.0", NSHighResolutionCapable=True,
                  NSSupportsAutomaticTermination=False, NSPrincipalClass="NSApplication")
     with (contents / "Info.plist").open("wb") as stream: plistlib.dump(plist, stream)
@@ -87,8 +106,7 @@ def main():
     run(python, SOURCE / "collect_licenses.py", resources / "Licenses")
     run("codesign", "--force", "--deep", "--sign", "-", "--identifier", "local.mxlev.TelegramFocus", staged)
     run("codesign", "--verify", "--deep", "--strict", staged)
-    if app.exists(): shutil.rmtree(app)
-    shutil.copytree(staged, app, symlinks=True)
+    replace_app_under_lock(staged, app, lambda candidate: run("codesign", "--verify", "--deep", "--strict", candidate))
     shutil.rmtree(staged)
     print(f"\nReady: {app}")
 

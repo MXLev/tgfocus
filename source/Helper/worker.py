@@ -29,6 +29,10 @@ class Worker:
         self.code_next_type = None
         self.resend_after = 0
         self.auth_retry_after = 0
+        self.current_user_id = None
+        self.current_usernames = set()
+        self.notify_cache = OrderedDict()
+        self.notify_generation = 0
 
     async def cancel_qr(self):
         task, self.qr_task = self.qr_task, None
@@ -38,6 +42,9 @@ class Worker:
 
     async def close_client(self):
         await self.cancel_qr()
+        self.current_user_id = None
+        self.current_usernames = set()
+        self.invalidate_notification_settings()
         self.phone_hash = None
         self.code_next_type = None
         self.resend_after = 0
@@ -50,6 +57,7 @@ class Worker:
 
     async def configure(self, request):
         from telethon import TelegramClient, events
+        from telethon.tl.types import UpdateNotifySettings
         from telethon.sessions import StringSession
         await self.close_client()
         api_id = int(request.get("apiId", "0"))
@@ -60,10 +68,11 @@ class Worker:
         self.client = TelegramClient(
             StringSession(request.get("session", "")), api_id, api_hash,
             device_model="Telegram Focus for Mac", system_version="macOS",
-            app_version="1.2.0", connection_retries=3, request_retries=2,
+            app_version="1.4.0", connection_retries=3, request_retries=2,
             retry_delay=2, timeout=10, flood_sleep_threshold=0,
         )
         self.client.add_event_handler(self.on_message, events.NewMessage(incoming=True))
+        self.client.add_event_handler(self.on_notify_settings, events.Raw(types=UpdateNotifySettings))
         emit("state", state="connecting", message="Подключаюсь к Telegram…")
         await asyncio.wait_for(self.client.connect(), timeout=25)
         if await self.client.is_user_authorized():
@@ -127,6 +136,10 @@ class Worker:
 
     async def authorized(self):
         me = await self.client.get_me()
+        self.current_user_id = getattr(me, "id", None)
+        self.current_usernames = {name.casefold() for name in
+            [getattr(me, "username", None)] + [getattr(item, "username", None)
+                for item in (getattr(me, "usernames", None) or []) if getattr(item, "active", False)] if name}
         emit("session", session=self.client.session.save())
         emit("state", state="connected", message="На связи", name=" ".join(filter(None, [me.first_name, me.last_name])))
         if self.monitor_task:
@@ -143,7 +156,86 @@ class Worker:
                      message="На связи" if connected else "Нет соединения. Telegram переподключается…")
                 was_connected = connected
 
+    def invalidate_notification_settings(self):
+        self.notify_cache.clear()
+        self.notify_generation += 1
+
+    async def on_notify_settings(self, update):
+        self.invalidate_notification_settings()
+
+    async def notification_settings(self, key, peer):
+        from telethon.tl.functions.account import GetNotifySettingsRequest
+        cached = self.notify_cache.get(key)
+        if cached and time.monotonic() < cached[0]:
+            return cached[1]
+        generation = self.notify_generation
+        try:
+            settings = await asyncio.wait_for(self.client(GetNotifySettingsRequest(peer)), timeout=5)
+        except Exception:
+            settings = None
+        if generation != self.notify_generation:
+            return None  # A live settings update invalidated an in-flight response.
+        self.notify_cache[key] = (time.monotonic() + (30 if settings is not None else 5), settings)
+        self.notify_cache.move_to_end(key)
+        while len(self.notify_cache) > 512:
+            self.notify_cache.popitem(last=False)
+        return settings
+
+    async def is_chat_muted(self, event, kind):
+        from telethon.tl.types import InputNotifyPeer, InputNotifyUsers, InputNotifyChats, InputNotifyBroadcasts, InputNotifyForumTopic
+        try:
+            peer = await event.get_input_chat()
+            header = getattr(getattr(event, "message", None), "reply_to", None)
+            topic_id = None
+            if kind == "group":
+                if header and getattr(header, "forum_topic", False):
+                    topic_id = getattr(header, "reply_to_top_id", None) or getattr(header, "reply_to_msg_id", None)
+                elif getattr(getattr(event, "chat", None), "forum", False):
+                    topic_id = 1  # General topic has no forum reply header.
+            if topic_id is not None:
+                topic = await self.notification_settings(("topic", event.chat_id, topic_id), InputNotifyForumTopic(peer, topic_id))
+                if topic is None:
+                    return None
+                until = topic.mute_until
+                if until is not None:
+                    if until.tzinfo is None:
+                        until = until.replace(tzinfo=timezone.utc)
+                    return until > datetime.now(timezone.utc)
+            settings = await self.notification_settings(("peer", event.chat_id), InputNotifyPeer(peer))
+            if settings is None:
+                return None
+            until = settings.mute_until
+            if until is None:
+                category = {"private": InputNotifyUsers, "group": InputNotifyChats, "channel": InputNotifyBroadcasts}[kind]
+                settings = await self.notification_settings(("global", kind), category())
+                if settings is None:
+                    return None
+                until = settings.mute_until
+            if until is None:
+                return False
+            if until.tzinfo is None:
+                until = until.replace(tzinfo=timezone.utc)
+            return until > datetime.now(timezone.utc)
+        except Exception:
+            return None
+
+    def explicit_mention(self, message):
+        from telethon.tl.types import MessageEntityMention, MessageEntityMentionName
+        for entity, text in getattr(message, "get_entities_text", lambda: [])():
+            if isinstance(entity, MessageEntityMentionName) and entity.user_id == self.current_user_id:
+                return True
+            if isinstance(entity, MessageEntityMention) and text.lstrip("@").casefold() in self.current_usernames:
+                return True
+        return False
+
+    def processing_enabled(self):
+        return self.config.get("enabled", True) and self.config.get("processingEnabled", True)
+
     async def on_message(self, event):
+        # Keep the connection warm, but do not resolve entities, query mute settings,
+        # classify messages, or send IPC events while delivery is paused.
+        if not self.processing_enabled():
+            return
         try:
             key = (event.chat_id, event.id)
             if key in self.seen:
@@ -183,12 +275,31 @@ class Worker:
                 # There is no public desktop deep link for a user without a username/phone,
                 # or a legacy basic group. Open Telegram rather than invent an ID link.
                 url = "tg://"
+            mentioned = bool(getattr(event.message, "mentioned", False))
+            reply_to_me = False
+            if kind == "group" and getattr(event, "is_reply", False):
+                # Telegram's mentioned flag also covers replies. Separate the two
+                # before applying independently configurable exceptions.
+                personal_mention = self.explicit_mention(event.message)
+                if mentioned:
+                    try:
+                        original = await asyncio.wait_for(event.get_reply_message(), timeout=5)
+                        reply_to_me = bool(original and original.out)
+                    except Exception:
+                        pass  # Unresolved replies must not bypass the mention switch.
+                mentioned = personal_mention
             msg = dict(chatId=str(event.chat_id), senderId=str(event.sender_id or ""),
                        kind=kind, text=text, outgoing=bool(event.out),
-                       mentioned=bool(getattr(event.message, "mentioned", False)),
+                       mentioned=mentioned, replyToMe=reply_to_me,
                        service=bool(event.message.action),
                        stale=(datetime.now(timezone.utc) - event.date).total_seconds() > 120)
             result = decide(msg, self.config)
+            if result.allowed:
+                muted = await self.is_chat_muted(event, kind)
+                msg.update(muted=muted is True, muteUnknown=muted is None)
+                result = decide(msg, self.config)
+            if not self.processing_enabled():
+                return  # The user may pause while a Telegram request is in flight.
             # Only forwarded messages include their body; suppressed messages leave no text in the UI.
             emit("message", allowed=result.allowed, reason=result.reason, title=title,
                  sender=sender_name, kind=kind, text=display[:600] if result.allowed else "",

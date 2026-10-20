@@ -5,6 +5,72 @@ import CoreImage.CIFilterBuiltins
 import Security
 import SwiftUI
 import UserNotifications
+import Darwin
+
+// Keep the descriptor open for the entire app lifetime. Never unlink a lock file:
+// another copy could otherwise lock a different inode and run concurrently.
+final class RuntimeLock {
+    private let handle: FileHandle
+    init(directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        let path = directory.appendingPathComponent("runtime.lock").path
+        let descriptor = Darwin.open(path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            let error = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            try? handle.close()
+            throw error
+        }
+    }
+}
+
+@MainActor
+enum StartupGuard {
+    private static var runtimeLock: RuntimeLock?
+
+    static func dataDirectory() throws -> URL {
+        if let override = ProcessInfo.processInfo.environment["TELEGRAM_FOCUS_DATA_DIR"] {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        return try FileManager.default.url(for: .applicationSupportDirectory,
+            in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("TelegramFocus")
+    }
+
+    static func allowLaunch() -> Bool {
+        do {
+            if try Bundle.main.bundleURL.resourceValues(forKeys: [.volumeIsReadOnlyKey]).volumeIsReadOnly == true {
+                show("Сначала установите приложение", "Перетащите Telegram Focus из образа диска в Applications (Программы), извлеките образ и запустите приложение из Программ.")
+                return false
+            }
+            let identifier = Bundle.main.bundleIdentifier ?? CredentialStore.service
+            if let other = NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
+                .first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
+                show("Telegram Focus уже запущен", "Чтобы запустить эту версию, сначала завершите предыдущую через значок самолётика → «Завершить Telegram Focus». Закрытие окна настроек не завершает приложение.")
+                other.activate(options: [.activateIgnoringOtherApps])
+                return false
+            }
+            runtimeLock = try RuntimeLock(directory: dataDirectory())
+            return true
+        } catch let error as POSIXError where error.code.rawValue == EWOULDBLOCK {
+            show("Telegram Focus занят", "Другая копия приложения уже работает или выполняется обновление. Завершите её либо дождитесь завершения сборки и повторите запуск.")
+            return false
+        } catch {
+            show("Не удалось безопасно запустить приложение", error.localizedDescription)
+            return false
+        }
+    }
+
+    private static func show(_ title: String, _ text: String) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = text
+        alert.addButton(withTitle: "Понятно")
+        alert.runModal()
+    }
+}
 
 struct Person: Codable, Identifiable, Equatable {
     var id: String
@@ -18,7 +84,7 @@ struct ChatRule: Codable, Identifiable, Equatable {
 }
 
 struct FilterConfig: Codable {
-    var enabled = true
+    var enabled = false
     var allPrivate = false
     var keywords = ["срочно", "позвони", "перезвони", "нужна помощь", "экстренно"]
     var people: [Person] = []
@@ -26,16 +92,20 @@ struct FilterConfig: Codable {
     var showPreview = true
     var playSound = true
     var allowMentions = true
+    var allowReplies = true
+    // Retained only to migrate experimental preferences; the release is manual.
+    private(set) var onlyDuringFocus = false
+    private(set) var migratedFromAutomaticMode = false
 
     init() {}
 
     enum CodingKeys: String, CodingKey {
-        case enabled, allPrivate, keywords, people, chats, showPreview, playSound, allowMentions
+        case enabled, allPrivate, keywords, people, chats, showPreview, playSound, allowMentions, allowReplies, onlyDuringFocus
     }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        enabled = try values.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        enabled = try values.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
         allPrivate = try values.decodeIfPresent(Bool.self, forKey: .allPrivate) ?? false
         keywords = try values.decodeIfPresent([String].self, forKey: .keywords) ?? keywords
         people = try values.decodeIfPresent([Person].self, forKey: .people) ?? []
@@ -43,6 +113,10 @@ struct FilterConfig: Codable {
         showPreview = try values.decodeIfPresent(Bool.self, forKey: .showPreview) ?? true
         playSound = try values.decodeIfPresent(Bool.self, forKey: .playSound) ?? true
         allowMentions = try values.decodeIfPresent(Bool.self, forKey: .allowMentions) ?? true
+        // The old switch controlled both; preserve its value when migrating.
+        allowReplies = try values.decodeIfPresent(Bool.self, forKey: .allowReplies) ?? allowMentions
+        migratedFromAutomaticMode = try values.decodeIfPresent(Bool.self, forKey: .onlyDuringFocus) ?? false
+        if migratedFromAutomaticMode { enabled = false }
     }
 }
 
@@ -55,6 +129,9 @@ struct Credentials: Codable {
 enum QRRenderer {
     static func image(for url: String) -> NSImage? {
         guard url.hasPrefix("tg://login?token=") else { return nil }
+        let token = url.dropFirst("tg://login?token=".count)
+        let allowed = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+        guard !token.isEmpty, token.allSatisfy({ allowed.contains($0) }) else { return nil }
         let filter = CIFilter.qrCodeGenerator()
         filter.message = Data(url.utf8)
         filter.correctionLevel = "M"
@@ -117,16 +194,34 @@ struct Activity: Identifiable {
 
 final class LineDecoder: @unchecked Sendable {
     private var pending = Data()
+    private var discarding = false
+    private let maximumFrameBytes = 1_048_576
     private let lock = NSLock()
     func consume(_ data: Data) -> [[String: Any]] {
         lock.lock()
         defer { lock.unlock() }
-        pending.append(data)
         var objects: [[String: Any]] = []
-        while let range = pending.range(of: Data([10])) {
-            let line = pending.subdata(in: pending.startIndex..<range.lowerBound)
-            pending.removeSubrange(pending.startIndex..<range.upperBound)
-            if let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any] { objects.append(object) }
+        var cursor = data.startIndex
+        while cursor < data.endIndex {
+            let newline = data[cursor...].firstIndex(of: 10)
+            let end = newline ?? data.endIndex
+            let fragment = data[cursor..<end]
+            if !discarding {
+                if pending.count + fragment.count <= maximumFrameBytes {
+                    pending.append(contentsOf: fragment)
+                } else {
+                    pending.removeAll(keepingCapacity: true)
+                    discarding = true
+                }
+            }
+            guard let newline else { break }
+            if !discarding,
+               let object = try? JSONSerialization.jsonObject(with: pending) as? [String: Any] {
+                objects.append(object)
+            }
+            pending.removeAll(keepingCapacity: true)
+            discarding = false
+            cursor = data.index(after: newline)
         }
         return objects
     }
@@ -135,6 +230,9 @@ final class LineDecoder: @unchecked Sendable {
 @MainActor
 final class AppModel: ObservableObject {
     static let shared = AppModel()
+    nonisolated static var isStartupSmokeTest: Bool {
+        ProcessInfo.processInfo.arguments.contains("--startup-smoke-test")
+    }
     @Published var config = FilterConfig()
     @Published var credentials = Credentials()
     @Published var state = "disconnected"
@@ -154,6 +252,7 @@ final class AppModel: ObservableObject {
     @Published var simulationReason = ""
     @Published var selectedPage = "overview"
     @Published var showLogoutConfirmation = false
+    @Published var startupNotice = ""
     @Published var qrImage: NSImage?
     @Published var qrExpiresAt = Date.distantPast
     @Published var deliveryMethod = ""
@@ -164,25 +263,44 @@ final class AppModel: ObservableObject {
     private var outputPipe: Pipe?
     private var shouldReconnect = false
     private var configURL: URL?
+    private(set) var startupAllowed = false
 
     var connected: Bool { state == "connected" }
+    var effectiveFilterEnabled: Bool { config.enabled }
+    var filterTitle: String { FilterPresentation.title(enabled: config.enabled) }
+    var filterBinding: Binding<Bool> {
+        Binding(get: { self.config.enabled }, set: { self.setFilterEnabled($0) })
+    }
+    func setFilterEnabled(_ enabled: Bool) {
+        config.enabled = enabled
+        saveConfig()
+    }
     var authStep: Bool { ["phone", "code", "password", "qr", "qrExpired", "authUnsupported"].contains(state) }
     var statusColor: Color { connected ? .green : state == "connecting" || state == "reconnecting" ? .orange : .secondary }
 
-    init() {
+    init(startRuntime: Bool = true) {
+        guard startRuntime else { return }
+        guard StartupGuard.allowLaunch() else {
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+            return
+        }
+        startupAllowed = true
+        if Self.isStartupSmokeTest {
+            // Exercise the actual app and worker without opening a user's
+            // Keychain, connecting an account, or prompting for OS permissions.
+            startHelper()
+            return
+        }
         do {
-            let root: URL
-            if let override = ProcessInfo.processInfo.environment["TELEGRAM_FOCUS_DATA_DIR"] {
-                root = URL(fileURLWithPath: override, isDirectory: true)
-            } else {
-                root = try FileManager.default.url(for: .applicationSupportDirectory,
-                    in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("TelegramFocus")
-            }
+            let root = try StartupGuard.dataDirectory()
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
                 attributes: [.posixPermissions: 0o700])
             configURL = root.appendingPathComponent("rules.json")
             if FileManager.default.fileExists(atPath: configURL!.path) {
                 config = try JSONDecoder().decode(FilterConfig.self, from: Data(contentsOf: configURL!))
+                if config.migratedFromAutomaticMode {
+                    startupNotice = "Настройки обновлены. Фильтр выключен — включи его вручную, когда будет нужно."
+                }
             }
         } catch { errorText = "Не удалось прочитать настройки: \(error.localizedDescription)" }
         do {
@@ -254,12 +372,21 @@ final class AppModel: ObservableObject {
                 try data.write(to: configURL, options: .atomic)
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
             }
-            if helperReady, let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                send(["command": "config", "config": object])
-            }
+            syncWorkerConfig()
         } catch { errorText = "Не удалось сохранить правила: \(error.localizedDescription)" }
         simulationAllowed = nil
         simulationReason = ""
+    }
+
+    private func syncWorkerConfig() {
+        guard helperReady else { return }
+        do {
+            let data = try JSONEncoder().encode(config)
+            var object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+            // Runtime processing state is separate from saved rules and simulation.
+            object["processingEnabled"] = effectiveFilterEnabled
+            send(["command": "config", "config": object])
+        } catch { errorText = "Не удалось передать настройки фильтра." }
     }
 
     func connect() {
@@ -355,20 +482,28 @@ final class AppModel: ObservableObject {
             simulationAllowed = object["allowed"] as? Bool ?? false
             simulationReason = object["reason"] as? String ?? ""
         case "message":
-            let allowed = object["allowed"] as? Bool ?? false
-            let title = object["title"] as? String ?? "Telegram"
-            let reason = object["reason"] as? String ?? ""
-            let url = object["url"] as? String ?? "tg://"
-            if allowed { passed += 1 } else { suppressed += 1 }
-            activities.insert(Activity(title: title, reason: reason, allowed: allowed, url: url), at: 0)
-            if activities.count > 50 { activities.removeLast() }
-            if allowed {
-                let body = config.showPreview ? (object["text"] as? String ?? "Новое сообщение") : "Новое важное сообщение в Telegram"
-                let subtitle = object["kind"] as? String == "private" ? "" : object["sender"] as? String ?? ""
-                notify(title: title, subtitle: subtitle, body: body, url: url,
-                    id: "tg-\(object["chatId"] ?? "")-\(object["messageId"] ?? "")")
-            }
+            guard config.enabled else { return }
+            deliverMessage(object)
         default: break
+        }
+    }
+
+    func deliverMessage(_ object: [String: Any]) {
+        let ruleAllowed = object["allowed"] as? Bool ?? false
+        let deliveryEnabled = config.enabled
+        let allowed = ruleAllowed && deliveryEnabled
+        let title = object["title"] as? String ?? "Telegram"
+        let reason = ruleAllowed && !deliveryEnabled ?
+            "Фильтр выключен" : (object["reason"] as? String ?? "")
+        let url = object["url"] as? String ?? "tg://"
+        if allowed { passed += 1 } else { suppressed += 1 }
+        activities.insert(Activity(title: title, reason: reason, allowed: allowed, url: url), at: 0)
+        if activities.count > 50 { activities.removeLast() }
+        if allowed {
+            let body = config.showPreview ? (object["text"] as? String ?? "Новое сообщение") : "Новое важное сообщение в Telegram"
+            let subtitle = object["kind"] as? String == "private" ? "" : object["sender"] as? String ?? ""
+            notify(title: title, subtitle: subtitle, body: body, url: url,
+                id: "tg-\(object["chatId"] ?? "")-\(object["messageId"] ?? "")")
         }
     }
 
@@ -392,7 +527,7 @@ final class AppModel: ObservableObject {
                 await refreshNotificationStatus()
                 if allowed && test {
                     notify(title: "Telegram Focus", subtitle: "Проверка уведомлений",
-                        body: "Срочно: фильтр готов к работе. Теперь разреши Telegram Focus в нужном режиме фокусирования.",
+                        body: "Проверка доставки. Разреши TGFocus в выбранном фокусировании и заглуши обычный Telegram. Включай фильтр вручную и выключай его перед выходом из фокусирования.",
                         url: "", id: UUID().uuidString)
                 } else if !allowed {
                     errorText = "Разреши уведомления Telegram Focus в Системных настройках → Уведомления."
@@ -425,8 +560,8 @@ final class AppModel: ObservableObject {
         send(["command": "dialogs"])
     }
 
-    func simulate(text: String, kind: String, chatId: String, senderId: String, mentioned: Bool = false) {
-        send(["command": "simulate", "message": ["text": text, "kind": kind, "chatId": chatId, "senderId": senderId, "mentioned": mentioned]])
+    func simulate(text: String, kind: String, chatId: String, senderId: String, mentioned: Bool = false, replyToMe: Bool = false) {
+        send(["command": "simulate", "message": ["text": text, "kind": kind, "chatId": chatId, "senderId": senderId, "mentioned": mentioned, "replyToMe": replyToMe]])
     }
 
     func logout() {

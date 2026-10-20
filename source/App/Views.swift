@@ -60,7 +60,7 @@ struct RootView: View {
                     }
                     Text("Правила работают на этом Mac")
                         .font(.system(size: 10)).foregroundStyle(.secondary)
-                    Text("Версия 1.3 · Apple Silicon")
+                    Text("Версия \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") · Apple Silicon")
                         .font(.system(size: 10)).foregroundStyle(.tertiary)
                 }.padding(10)
             }
@@ -119,7 +119,7 @@ struct OverviewView: View {
         PageTitle(title: "Только то, что важно.", subtitle: "Telegram остаётся рядом. Шум — за пределами внимания.")
         HStack(alignment: .top, spacing: 20) {
             VStack(alignment: .leading, spacing: 15) {
-                Label(model.config.enabled ? "ФИЛЬТР ВКЛЮЧЁН" : "ФИЛЬТР НА ПАУЗЕ",
+                Label(model.filterTitle.uppercased(),
                       systemImage: model.config.enabled ? "checkmark.shield.fill" : "pause.circle.fill")
                     .font(.system(size: 11, weight: .bold)).tracking(1.2)
                 Text(model.config.enabled ? "Личное. Срочное. Твоё." : "Можно выдохнуть.")
@@ -137,19 +137,31 @@ struct OverviewView: View {
                 }
             }
             Spacer(minLength: 0)
-            Toggle("Фильтр", isOn: $model.config.enabled).labelsHidden().toggleStyle(.switch)
+            Toggle("Фильтр", isOn: model.filterBinding).labelsHidden().toggleStyle(.switch)
                 .controlSize(.large).tint(.white.opacity(0.4))
-                .onChange(of: model.config.enabled) { model.saveConfig() }
         }
         .padding(25).frame(maxWidth: .infinity, alignment: .leading)
         .foregroundStyle(.white)
-        .background(LinearGradient(colors: model.config.enabled ? [accent, Color(red: 0.27, green: 0.34, blue: 0.75)] : [.gray, .gray.opacity(0.8)],
+        .background(LinearGradient(colors: model.effectiveFilterEnabled ? [accent, Color(red: 0.27, green: 0.34, blue: 0.75)] : [.gray, .gray.opacity(0.8)],
                                    startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 20))
 
         HStack(spacing: 14) {
             StatTile(number: "\(model.passed)", label: "Пропущено", icon: "bell.badge", color: .green)
             StatTile(number: "\(model.suppressed)", label: "Заглушено", icon: "bell.slash", color: .secondary)
             StatTile(number: "\(model.config.people.count)", label: "Важных людей", icon: "person.crop.circle.badge.checkmark", color: accent)
+        }
+        if !model.startupNotice.isEmpty {
+            Panel(title: "После обновления", icon: "info.circle") {
+                Text(model.startupNotice).font(.callout)
+                Button("Понятно") { model.startupNotice = "" }
+            }
+        }
+        Panel(title: "Ручное управление", icon: "hand.tap") {
+            Text("Включай фильтр переключателем выше или через значок самолётика в строке меню. Перед выходом из фокусирования macOS выключай фильтр TGFocus вручную.")
+                .font(.callout).foregroundStyle(.secondary)
+            Text("Если обычный Telegram тоже показывает уведомления, одно сообщение может прийти дважды. Для работы во время фокусирования разреши Telegram Focus в списке приложений этого режима, а обычный Telegram оставь заглушённым.")
+                .font(.caption).foregroundStyle(.secondary)
+            Button("Как настроить →") { model.selectedPage = "guide" }.buttonStyle(.link)
         }
         if !model.notificationsAllowed {
             Panel(title: "Разреши уведомления", icon: "bell") {
@@ -189,7 +201,7 @@ struct OverviewView: View {
                     .buttonStyle(.link).font(.caption)
             }
         }
-        Text("Фильтр включается вручную и работает, пока приложение запущено, а Mac не спит. Настрой режим фокусирования во вкладке «Как настроить».")
+        Text("Фильтр работает, пока приложение запущено, а Mac не спит. По умолчанию уведомления приостановлены вне фокусирования. Настрой разрешения во вкладке «Как настроить».")
             .font(.caption).foregroundStyle(.secondary)
     }
 }
@@ -221,6 +233,7 @@ struct RulesView: View {
     @ViewState<String> private var testChat = ""
     @ViewState<String> private var testPerson = ""
     @ViewState<Bool> private var testMentioned = false
+    @ViewState<Bool> private var testReplied = false
     var body: some View {
         PageTitle(title: "Твои правила", subtitle: "Сохраняются автоматически. Применяются только к уведомлениям Telegram Focus.")
         Panel(title: "Личные сообщения", icon: "bubble.left.and.bubble.right") {
@@ -272,9 +285,11 @@ struct RulesView: View {
                 Spacer()
                 Button("Исключение", systemImage: "plus") { picker = "chats"; model.loadDialogs() }
             }
-            Toggle("Пропускать упоминания и ответы мне в группах", isOn: $model.config.allowMentions)
+            Toggle("Уведомлять об упоминаниях меня в группах", isOn: $model.config.allowMentions)
                 .onChange(of: model.config.allowMentions) { model.saveConfig() }
-            Text("По персональной отметке Telegram. Такие обращения проходят без ключевых слов, даже если группа не в исключениях.")
+            Toggle("Уведомлять об ответах на мои сообщения в группах", isOn: $model.config.allowReplies)
+                .onChange(of: model.config.allowReplies) { model.saveConfig() }
+            Text("Включённые обращения проходят без ключевых слов. При выключении сообщение всё ещё может пройти по другим правилам чата.")
                 .font(.caption).foregroundStyle(.secondary)
             ForEach($model.config.chats) { $chat in
                 VStack(spacing: 8) {
@@ -290,6 +305,8 @@ struct RulesView: View {
             }
         }
         Panel(title: "Проверить правило", icon: "play.circle") {
+            Text("Проверка примера не учитывает фокусирование и mute-настройки реального чата.")
+                .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Picker("Тип чата", selection: $testKind) {
                     Text("Личка").tag("private")
@@ -310,10 +327,11 @@ struct RulesView: View {
             }
             TextField("Текст сообщения", text: $testText, axis: .vertical).lineLimit(2...4).textFieldStyle(.roundedBorder)
             if testKind == "group" {
-                Toggle("Telegram отметил сообщение как обращение ко мне", isOn: $testMentioned).font(.caption)
+                Toggle("Упоминание меня", isOn: $testMentioned).font(.caption)
+                Toggle("Ответ на моё сообщение", isOn: $testReplied).font(.caption)
             }
             HStack {
-                Button("Проверить") { model.simulate(text: testText, kind: testKind, chatId: testChat, senderId: testPerson, mentioned: testKind == "group" && testMentioned) }
+                Button("Проверить") { model.simulate(text: testText, kind: testKind, chatId: testChat, senderId: testPerson, mentioned: testKind == "group" && testMentioned, replyToMe: testKind == "group" && testReplied) }
                     .buttonStyle(.borderedProminent).disabled(!model.helperReady)
                 if let allowed = model.simulationAllowed {
                     Label(allowed ? "Пропустим" : "Заглушим", systemImage: allowed ? "checkmark.circle.fill" : "bell.slash.fill")
@@ -327,6 +345,7 @@ struct RulesView: View {
         .onChange(of: testChat) { model.simulationAllowed = nil }
         .onChange(of: testPerson) { model.simulationAllowed = nil }
         .onChange(of: testMentioned) { model.simulationAllowed = nil }
+        .onChange(of: testReplied) { model.simulationAllowed = nil }
         Panel(title: "Внешний вид уведомлений", icon: "bell.badge") {
             Toggle("Показывать текст сообщения", isOn: $model.config.showPreview)
                 .onChange(of: model.config.showPreview) { model.saveConfig() }
@@ -536,31 +555,72 @@ struct ConnectionView: View {
 struct GuideView: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
-        PageTitle(title: "Тишина за три шага", subtitle: "Настрой один раз. Потом включай фильтр из строки меню.")
-        Panel(title: "1. Подключи Telegram и выбери правила", icon: "link") {
-            Text("Во вкладке «Подключение» войди в свой аккаунт. В «Правилах» добавь важных людей, слова и исключения для групп. Проверь примеры встроенным тестом.")
+        PageTitle(title: "Первая настройка", subtitle: "Пройди шаги по порядку. Python, терминал и автоматизации в «Командах» не понадобятся.")
+        Panel(title: "1. Установи и открой приложение", icon: "square.and.arrow.down") {
+            Text("Открой скачанный DMG, перетащи Telegram Focus в Applications (Программы), извлеки образ диска и запусти приложение из Программ.")
                 .font(.callout).foregroundStyle(.secondary)
+            Text("Если macOS блокирует первый запуск, открой Системные настройки → Конфиденциальность и безопасность → «Всё равно открыть». Разрешай запуск только для сборки из репозитория MXLev/tgfocus; отключать защиту macOS не нужно.")
+                .font(.callout).foregroundStyle(.secondary)
+            Text("Найди самолётик в строке меню → «Открыть настройки…». Значка в Dock нет — это нормально.")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+        Panel(title: "2. Подключи свой Telegram", icon: "link") {
+            Text("Открой my.telegram.org/apps, войди в свой аккаунт Telegram и получи API ID и API Hash в разделе API development tools. Если ключи уже есть, используй их. Для регистрации можно выбрать название Personal Focus, уникальное короткое имя латиницей и платформу Desktop.")
+                .font(.callout).foregroundStyle(.secondary)
+            Link("Получить API ID и API Hash", destination: URL(string: "https://my.telegram.org/apps")!)
+            Text("Во вкладке «Подключение» введи оба значения и нажми «Подключить», затем «Войти по QR-коду». На телефоне: Telegram → Настройки → Устройства → Подключить устройство. Отсканируй QR и подтверди вход. Если Telegram попросит пароль двухэтапной аутентификации, введи его в приложении. Можно также войти по номеру и коду.")
+                .font(.callout).foregroundStyle(.secondary)
+            Text("Ключи, код входа, пароль и сессию никому не отправляй. После подключения в приложении появится статус аккаунта.")
+                .font(.caption).foregroundStyle(.secondary)
             Button("К подключению →") { model.selectedPage = "connection" }.buttonStyle(.link)
         }
-        Panel(title: "2. Разреши Telegram Focus в фокусировании", icon: "moon") {
-            Text("Системные настройки → Фокусирование → выбери или создай режим → Разрешённые приложения. Добавь Telegram Focus в список разрешённых. Обычный Telegram туда не добавляй.")
+        Panel(title: "3. Выбери, что для тебя важно", icon: "line.3.horizontal.decrease.circle") {
+            Text("В «Правилах» добавь важных людей и ключевые слова. От важных людей проходят все личные сообщения; от остальных — сообщения с нужными словами, если ты не разрешил все личные.")
                 .font(.callout).foregroundStyle(.secondary)
-            Text("Если у обычного Telegram включён обход фокусирования через неотложные уведомления, отключи его для этого режима. Иначе часть уведомлений может пройти в обход фильтра.")
+            Text("Для групп и каналов добавь нужные исключения. Уведомления об упоминаниях и ответах на твои сообщения включаются отдельно. Чаты и темы форумов, заглушённые в Telegram, останутся тихими даже при совпадении ключевого слова.")
+                .font(.callout).foregroundStyle(.secondary)
+            Text("Кнопка «Проверить» позволяет проверить пример без отправки сообщения. Она проверяет правила, но не системные разрешения и настройки реального чата.")
+                .font(.caption).foregroundStyle(.secondary)
+            Button("К правилам →") { model.selectedPage = "rules" }.buttonStyle(.link)
+        }
+        Panel(title: "4. Разреши уведомления", icon: "bell.badge") {
+            Text("Нажми «Разрешить уведомления» и подтверди системный запрос. В Системные настройки → Уведомления → Telegram Focus включи допуск уведомлений и баннеры.")
+                .font(.callout).foregroundStyle(.secondary)
+            HStack {
+                Button("Разрешить уведомления") { model.requestNotifications() }.buttonStyle(.borderedProminent)
+                Button("Открыть уведомления macOS") { model.openSettings("com.apple.Notifications-Settings.extension") }
+            }
+            Text("В «Обзоре» включи главный переключатель, когда захочешь получать отфильтрованные уведомления. При первом запуске он выключен; управление ручное.")
+                .font(.callout).foregroundStyle(.secondary)
+            Button("К обзору →") { model.selectedPage = "overview" }.buttonStyle(.link)
+        }
+        Panel(title: "5. Настрой режим фокусирования macOS", icon: "moon") {
+            Text("Открой Системные настройки → Фокусирование → «Не беспокоить» или создай свой режим. В разделе «Приложения» выбери «Разрешить уведомления от» и добавь Telegram Focus. Обычный Telegram оставь вне списка разрешённых приложений.")
+                .font(.callout).foregroundStyle(.secondary)
+            Text("В настройках уведомлений обычного Telegram отключи неотложные уведомления, если такой переключатель доступен, чтобы он не обходил фильтр.")
+                .font(.callout).foregroundStyle(.secondary)
+            Text("Включай главный фильтр TGFocus вручную вместе с фокусированием macOS. Перед выключением фокусирования выключай фильтр TGFocus — иначе обычный Telegram и TGFocus могут показать одно сообщение дважды.")
                 .font(.caption).foregroundStyle(.secondary)
             Button("Открыть фокусирование") { model.openSettings("com.apple.Focus-Settings.extension") }.buttonStyle(.borderedProminent)
         }
-        Panel(title: "3. Включи режим и проверь доставку", icon: "checkmark.shield") {
-            Text("Включи настроенный режим macOS и фильтр в Telegram Focus. Отправь тестовое уведомление, затем попроси кого-нибудь написать «срочно» в личку. Обычное сообщение из группы должно остаться без баннера.")
+        Panel(title: "6. Проверь, что всё работает", icon: "checkmark.shield") {
+            Text("Включи настроенный режим через Пункт управления → Фокусирование. В «Обзоре» включи фильтр TGFocus, затем нажми «Тестовое уведомление»: должен появиться баннер TGFocus.")
                 .font(.callout).foregroundStyle(.secondary)
             Button("Тестовое уведомление") { model.requestNotifications(test: true) }
+            Text("Попроси другого человека написать «срочно» в незаглушённую личку. Проверь реальный баннер, а не только запись в журнале. Сообщение, не подходящее под твои правила, и сообщение из заглушённого чата должны остаться тихими.")
+                .font(.callout).foregroundStyle(.secondary)
+            Text("Выключи главный фильтр TGFocus, затем выключи фокусирование macOS. Попроси отправить ещё одно сообщение: TGFocus должен молчать, обычный Telegram сможет показать своё уведомление. Снова включи фокусирование и главный фильтр, чтобы вернуть доставку TGFocus.")
+                .font(.callout).foregroundStyle(.secondary)
+            Text("Если баннера нет, проверь подключение Telegram, разрешение уведомлений macOS, список разрешённых приложений выбранного режима и mute самого чата.")
+                .font(.caption).foregroundStyle(.secondary)
         }
-        Panel(title: "В обычное время", icon: "sun.max") {
-            Text("Выключи фильтр в строке меню и отключи режим фокусирования. Тогда уведомления снова показывает обычный Telegram. В этой версии переключатель фильтра ручной: изменение режима macOS его автоматически не меняет.")
+        Panel(title: "Готово — как пользоваться дальше", icon: "sun.max") {
+            Text("Включай и выключай фильтр самостоятельно. Главный выключатель в меню и в настройках всегда останавливает доставку. Вне фокусирования возможны дубли с Telegram, если оставить фильтр включённым.")
                 .font(.callout).foregroundStyle(.secondary)
             Divider()
-            Text("Приложение работает без значка в Dock. После входа следующие запуски идут в фоне. Нажми значок Telegram Focus в строке меню → «Открыть настройки…», чтобы открыть окно. Закрытие окна оставляет фильтр работающим. Команда «Завершить Telegram Focus» останавливает его. Во сне, при выключенном Mac или без интернета новые сообщения не обрабатываются.")
+            Text("Закрытие окна настроек оставляет фильтр работающим. Чтобы полностью остановить приложение, нажми самолётик → «Завершить Telegram Focus». Во сне, при выключенном Mac или без интернета новые сообщения не обрабатываются.")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("Ключевые слова проверяются в тексте и подписях к медиа. Голосовые не расшифровываются, звонки и секретные чаты не поддерживаются. Голосовые от важных людей проходят как вложения.")
+            Text("Ключевые слова проверяются в тексте и подписях к медиа. Голосовые не расшифровываются, звонки и секретные чаты не поддерживаются.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

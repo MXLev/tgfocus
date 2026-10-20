@@ -39,6 +39,17 @@ Check that the menu-bar icon appears, settings open, and rule simulation works w
 
 The CI job validates the DMG automatically, but only this test on your Mac validates the visible installer, downloaded-app security prompts, and notification permissions. Uploading a CI artifact does not publish a GitHub Release.
 
+### Launch, update, and notification regression checks
+
+- Open settings from the menu bar, close them, and open them again. Closing settings must not stop filtering.
+- Try launching the app directly from the read-only DMG: it should explain installation and exit before starting a worker or loading credentials.
+- With an installed copy running, launch a second copy from a different writable folder. It should explain how to quit the first copy and exit without starting another worker.
+- The free ad-hoc build must launch without the restricted time-sensitive entitlement. CI verifies the installed app signature, starts its actual signed executable and worker, and opens/reopens settings on macOS 15 and 26 using the same DMG. This test uses an isolated data directory and does not access credentials or request notification permissions.
+- This release has only manual filtering. New installs start with the master switch off. An old experimental `onlyDuringFocus: true` preference migrates to manual mode with the filter off, retaining rules and credentials. Existing manual preferences keep their enabled state. There must be no automatic-mode control, signing setup, or native Focus Filter instructions in the app.
+- Test the master switch from both settings and the menu: off must stop delivery, both labels must update, and the template menu icon must change between outlined and filled. For Focus use, allow TGFocus in Allowed Apps, mute ordinary Telegram, and turn the filter off manually before leaving Focus to avoid duplicates.
+- Check mention-only and reply-only switches independently, including a reply that also explicitly mentions you. Check inherited chat/category mute settings, a muted forum topic in an unmuted group, an explicitly unmuted topic, and the General topic.
+- While the app is running, a source build must refuse to replace it. Run two source builds concurrently: the second must stop before touching shared output. The runtime lock covers the entire first build through installation. Python tests exercise copy/validation failures, rollback, and lock contention throughout the build.
+
 ### Release checklist
 
 1. Run the full macOS build and DMG smoke test above, or download the successful CI run's DMG artifact.
@@ -47,3 +58,9 @@ The CI job validates the DMG automatically, but only this test on your Mac valid
 4. Keep the version in `source/build.py` consistent with the release tag. Push a version tag to create a draft release, then review the artifacts and notes before publishing it.
 
 For security-sensitive reports, read [SECURITY.md](SECURITY.md). Keep discussion respectful and focused on the work.
+
+### Idle resource diagnostic
+
+The installed-app smoke test closes settings, disables the master filter, and keeps the app and worker alive for 25 seconds without a Telegram account. It reports summed resident memory, memory change, and average CPU time for the app process tree after startup warmup as a GitHub Actions notice. This short disconnected sample does not prove the absence of long-term leaks or represent an active Telegram account.
+
+With the master switch off, the worker skips message/entity/mute processing and IPC events. The Telegram connection stays available for fast resumption; its keepalive/reconnect traffic remains. No Focus status polling or App Intents registration runs in this release. Decision history and worker caches are bounded; the IPC decoder drops frames over 1 MiB and recovers at the next newline.

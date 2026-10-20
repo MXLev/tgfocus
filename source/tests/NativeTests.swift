@@ -1,9 +1,63 @@
 import Foundation
 import CoreImage
+import Darwin
+import AppKit
+import UserNotifications
 
 @main
 struct NativeTests {
-    static func main() throws {
+    @MainActor static func main() throws {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.accessory)
+        let settings = SettingsWindowController()
+        var creations = 0
+        func content() -> NSViewController {
+            creations += 1
+            let controller = NSViewController()
+            controller.view = NSView(frame: NSRect(x: 0, y: 0, width: 1060, height: 790))
+            return controller
+        }
+        settings.show(makeContent: content)
+        let originalWindow = settings.window!
+        precondition(originalWindow.isVisible)
+        originalWindow.close()
+        precondition(!originalWindow.isVisible)
+        settings.show(makeContent: content)
+        precondition(settings.window === originalWindow && originalWindow.isVisible && creations == 1)
+        originalWindow.close()
+        precondition(FilterPresentation.title(enabled: false) == "Фильтр выключен")
+        precondition(FilterPresentation.title(enabled: true) == "Фильтр включён")
+        let onIcon = FilterPresentation.icon(enabled: true)
+        let offIcon = FilterPresentation.icon(enabled: false)
+        precondition(onIcon.isTemplate && offIcon.isTemplate && onIcon.tiffRepresentation != offIcon.tiffRepresentation)
+        let model = AppModel(startRuntime: false)
+        model.filterBinding.wrappedValue = false // The settings control uses this binding.
+        precondition(!model.config.enabled && !model.effectiveFilterEnabled && model.filterTitle == "Фильтр выключен")
+        model.setFilterEnabled(true) // The menu uses the same setter.
+        precondition(model.filterBinding.wrappedValue && model.effectiveFilterEnabled && model.filterTitle == "Фильтр включён")
+        model.setFilterEnabled(false)
+        model.deliverMessage(["allowed": true, "title": "test"])
+        precondition(model.passed == 0 && model.suppressed == 1)
+        model.setFilterEnabled(true)
+        model.receive(["type": "message", "allowed": false, "title": "test", "reason": "rule rejected"])
+        precondition(model.suppressed == 2 && model.activities.first?.reason == "rule rejected")
+        model.setFilterEnabled(false)
+        model.receive(["type": "message", "allowed": true, "title": "test"])
+        precondition(model.passed == 0 && model.suppressed == 2)
+        let lockDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: lockDirectory) }
+        do {
+            let first = try RuntimeLock(directory: lockDirectory)
+            try withExtendedLifetime(first) {
+                do {
+                    _ = try RuntimeLock(directory: lockDirectory)
+                    fatalError("Second app instance acquired the same lock")
+                } catch let error as POSIXError {
+                    precondition(error.code.rawValue == EWOULDBLOCK)
+                }
+            }
+        }
+        _ = try RuntimeLock(directory: lockDirectory) // Lock is released when the first copy exits.
         let decoder = LineDecoder()
         let text = "{\"type\":\"message\",\"text\":\"Срочно 📨\"}\n{\"type\":\"ready\"}\n"
         var messages: [[String: Any]] = []
@@ -13,7 +67,14 @@ struct NativeTests {
         precondition(messages[1]["type"] as? String == "ready")
         precondition(decoder.consume(Data("broken\n".utf8)).isEmpty)
         precondition(decoder.consume(Data("{\"type\":\"ok\"}\n".utf8)).count == 1)
+        let oversizedDecoder = LineDecoder()
+        precondition(oversizedDecoder.consume(Data(repeating: 65, count: 1_048_576)).isEmpty)
+        precondition(oversizedDecoder.consume(Data("overflow".utf8)).isEmpty)
+        let recovered = oversizedDecoder.consume(Data("\n{\"type\":\"ok\"}\n".utf8))
+        precondition(recovered.count == 1 && recovered[0]["type"] as? String == "ok")
         var config = FilterConfig()
+        precondition(!config.enabled && !config.onlyDuringFocus)
+        config.enabled = true
         config.people = [Person(id: "42", name: "Важный")]
         config.chats = [ChatRule(id: "-100123", name: "Учёба")]
         let data = try JSONEncoder().encode(config)
@@ -26,13 +87,34 @@ struct NativeTests {
         precondition(raw["apiHash"] == nil && raw["session"] == nil)
         var legacy = raw
         legacy.removeValue(forKey: "allowMentions")
+        legacy.removeValue(forKey: "allowReplies")
+        legacy.removeValue(forKey: "onlyDuringFocus")
         let migrated = try JSONDecoder().decode(FilterConfig.self, from: JSONSerialization.data(withJSONObject: legacy))
         precondition(migrated.allowMentions)
+        precondition(migrated.allowReplies)
+        precondition(!migrated.onlyDuringFocus && migrated.enabled)
         precondition(migrated.people == config.people && migrated.chats == config.chats)
         precondition(migrated.keywords == config.keywords)
         config.allowMentions = false
         let disabledMentions = try JSONDecoder().decode(FilterConfig.self, from: JSONEncoder().encode(config))
         precondition(!disabledMentions.allowMentions)
+        var oldDisabled = raw
+        oldDisabled["allowMentions"] = false
+        oldDisabled.removeValue(forKey: "allowReplies")
+        oldDisabled.removeValue(forKey: "onlyDuringFocus")
+        let migratedDisabled = try JSONDecoder().decode(FilterConfig.self, from: JSONSerialization.data(withJSONObject: oldDisabled))
+        precondition(!migratedDisabled.allowMentions && !migratedDisabled.allowReplies && !migratedDisabled.onlyDuringFocus)
+        config.allowReplies = false
+        let savedOptions = try JSONDecoder().decode(FilterConfig.self, from: JSONEncoder().encode(config))
+        precondition(!savedOptions.allowMentions && !savedOptions.allowReplies && savedOptions.enabled)
+        var oldAutomatic = raw
+        oldAutomatic["enabled"] = true
+        oldAutomatic["onlyDuringFocus"] = true
+        let paused = try JSONDecoder().decode(FilterConfig.self, from: JSONSerialization.data(withJSONObject: oldAutomatic))
+        precondition(!paused.enabled && !paused.onlyDuringFocus && paused.migratedFromAutomaticMode)
+        precondition(paused.people == config.people && paused.chats == config.chats && paused.keywords == config.keywords)
+        let persistedPause = try JSONDecoder().decode(FilterConfig.self, from: JSONEncoder().encode(paused))
+        precondition(!persistedPause.enabled && !persistedPause.migratedFromAutomaticMode)
         let fakeURL = "tg://login?token=TEST_NOT_A_REAL_TOKEN"
         guard let qr = QRRenderer.image(for: fakeURL) else { fatalError("QR image generation failed") }
         guard let tiff = qr.tiffRepresentation, let image = CIImage(data: tiff) else { fatalError("QR image serialization failed") }
@@ -41,6 +123,12 @@ struct NativeTests {
         guard let result = detector.features(in: image).first as? CIQRCodeFeature else { fatalError("QR image decoding failed") }
         precondition(result.messageString == fakeURL)
         precondition(QRRenderer.image(for: "https://example.org") == nil)
+        for suffix in ["", "token&extra=1", "token fragment", "token#fragment", "token%20"] {
+            precondition(QRRenderer.image(for: "tg://login?token=" + suffix) == nil)
+        }
+        print("Native startup lock: duplicate instance rejected, lock released after exit OK")
+        print("Native settings window: opens and reopens the same retained window OK")
+        print("Native manual filter: shared controls, pause and safe legacy preference migration OK")
         print("Native checks: split Unicode IPC, invalid frames, config persistence and secret separation OK")
         print("Native QR rendering: generated image decodes to the exact login URI OK")
     }

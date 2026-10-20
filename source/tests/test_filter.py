@@ -38,6 +38,26 @@ class RulesTests(unittest.TestCase):
     def test_group_personal_mention_passes(self): self.check(True, "Привет", kind="group", mentioned=True)
     def test_mention_switch_off(self):
         self.assertFalse(decide(dict(kind="group", mentioned=True, text="Привет"), dict(BASE, allowMentions=False)).allowed)
+
+    def test_mentions_and_replies_can_be_switched_independently(self):
+        for mentions in (False, True):
+            for replies in (False, True):
+                config = dict(BASE, allowMentions=mentions, allowReplies=replies)
+                for mentioned, replied in ((True, False), (False, True), (True, True)):
+                    with self.subTest(mentions=mentions, replies=replies, mentioned=mentioned, replied=replied):
+                        result = decide(dict(kind="group", mentioned=mentioned, replyToMe=replied), config)
+                        self.assertEqual(result.allowed, (mentions and mentioned) or (replies and replied))
+
+    def test_legacy_combined_switch_is_preserved_for_replies(self):
+        for enabled in (True, False):
+            self.assertEqual(decide(dict(kind="group", replyToMe=True), dict(BASE, allowMentions=enabled)).allowed, enabled)
+
+    def test_reply_does_not_override_pause_stale_outgoing_or_channel(self):
+        for override in [dict(stale=True), dict(outgoing=True), dict(service=True), dict(kind="channel")]:
+            message = dict(kind="group", replyToMe=True)
+            message.update(override)
+            self.assertFalse(decide(message, dict(BASE, allowReplies=True)).allowed)
+        self.assertFalse(decide(dict(kind="group", replyToMe=True), dict(BASE, enabled=False)).allowed)
     def test_mention_does_not_override_pause(self):
         self.assertFalse(decide(dict(kind="group", mentioned=True), dict(BASE, enabled=False)).allowed)
     def test_mention_does_not_override_stale(self): self.check(False, kind="group", mentioned=True, stale=True)
@@ -72,6 +92,11 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.worker = Worker()
         self.worker.config = copy.deepcopy(BASE)
+        # Event tests isolate rule/auth handling; real mute-policy requests have
+        # their own tests below.
+        muting = patch.object(self.worker, 'is_chat_muted', new=AsyncMock(return_value=False))
+        muting.start()
+        self.addCleanup(muting.stop)
         self.output = io.StringIO()
         self.redirect = redirect_stdout(self.output)
         self.redirect.__enter__()
@@ -95,6 +120,30 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         fields.update(changes)
         return SimpleNamespace(**fields)
 
+    async def test_disabled_filter_skips_all_event_work(self):
+        for config in [dict(BASE, enabled=False), dict(BASE, processingEnabled=False)]:
+            self.worker.config = config
+            await self.worker.on_message(object())  # Even reading event fields would fail.
+        self.worker.is_chat_muted.assert_not_awaited()
+        self.assertEqual(self.messages(), [])
+        self.assertEqual(len(self.worker.seen), 0)
+
+    async def test_pause_during_mute_request_does_not_emit_message(self):
+        async def pause(*args):
+            self.worker.config["processingEnabled"] = False
+            return False
+        self.worker.is_chat_muted.side_effect = pause
+        await self.worker.on_message(self.event())
+        self.assertEqual(self.messages(), [])
+
+    async def test_resuming_runtime_processing_uses_current_rules(self):
+        self.worker.config["processingEnabled"] = False
+        await self.worker.on_message(self.event())
+        self.worker.config["processingEnabled"] = True
+        await self.worker.on_message(self.event())
+        self.assertEqual(len(self.messages()), 1)
+        self.assertTrue(self.messages()[0]["allowed"])
+
     async def test_message_event_and_duplicate(self):
         event = self.event()
         await self.worker.on_message(event)
@@ -110,11 +159,76 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.messages()[0]["allowed"])
         self.assertNotIn("секретный обычный текст", self.output.getvalue())
 
+    async def test_muted_chat_suppresses_matching_keyword_without_forwarding_text(self):
+        self.worker.is_chat_muted.return_value = True
+        await self.worker.on_message(self.event(raw_text="срочно приватное"))
+        self.assertFalse(self.messages()[-1]["allowed"])
+        self.assertEqual(self.messages()[-1]["text"], "")
+        self.assertIn("выключены в Telegram", self.messages()[-1]["reason"])
+
+    async def test_unknown_mute_settings_suppress_notification(self):
+        self.worker.is_chat_muted.return_value = None
+        await self.worker.on_message(self.event())
+        self.assertFalse(self.messages()[-1]["allowed"])
+        self.assertIn("Не удалось проверить", self.messages()[-1]["reason"])
+
+    async def test_rules_rejection_does_not_fetch_notification_settings(self):
+        await self.worker.on_message(self.event(raw_text="обычный текст"))
+        self.worker.is_chat_muted.assert_not_awaited()
+
     async def test_telegram_mention_flag_reaches_rules(self):
         await self.worker.on_message(self.event(is_private=False, is_group=True, raw_text="Привет",
             message=SimpleNamespace(action=None, mentioned=True)))
         self.assertTrue(self.messages()[0]["allowed"])
-        self.assertEqual(self.messages()[0]["reason"], "Упоминание или ответ тебе")
+        self.assertEqual(self.messages()[0]["reason"], "Упоминание тебя")
+
+    def reply_event(self, *, original_out=True, entities=(), fetch_error=None):
+        self.worker.current_user_id = 42
+        self.worker.current_usernames = {"myname"}
+        return self.event(is_private=False, is_group=True, raw_text="Привет", is_reply=True,
+            message=SimpleNamespace(action=None, mentioned=True, get_entities_text=lambda: entities),
+            get_reply_message=AsyncMock(return_value=SimpleNamespace(out=original_out), side_effect=fetch_error))
+
+    async def test_reply_to_me_uses_reply_switch_instead_of_telegram_mention_flag(self):
+        self.worker.config.update(allowMentions=True, allowReplies=False)
+        await self.worker.on_message(self.reply_event())
+        self.assertFalse(self.messages()[-1]["allowed"])
+
+    async def test_reply_to_me_passes_with_mentions_disabled(self):
+        self.worker.config.update(allowMentions=False, allowReplies=True)
+        await self.worker.on_message(self.reply_event())
+        self.assertTrue(self.messages()[-1]["allowed"])
+        self.assertEqual(self.messages()[-1]["reason"], "Ответ на твоё сообщение")
+
+    async def test_explicit_username_mention_in_reply_can_pass_independently(self):
+        from telethon.tl.types import MessageEntityMention
+        self.worker.config.update(allowMentions=True, allowReplies=False)
+        await self.worker.on_message(self.reply_event(entities=[(MessageEntityMention(0, 7), "@MyName")]))
+        self.assertTrue(self.messages()[-1]["allowed"])
+        self.assertEqual(self.messages()[-1]["reason"], "Упоминание тебя")
+
+    async def test_mention_of_another_user_does_not_override_disabled_replies(self):
+        from telethon.tl.types import MessageEntityMention
+        self.worker.config.update(allowMentions=True, allowReplies=False)
+        await self.worker.on_message(self.reply_event(entities=[(MessageEntityMention(0, 6), "@other")]))
+        self.assertFalse(self.messages()[-1]["allowed"])
+
+    async def test_reply_to_someone_else_is_not_reply_to_me(self):
+        self.worker.config.update(allowMentions=False, allowReplies=True)
+        await self.worker.on_message(self.reply_event(original_out=False))
+        self.assertFalse(self.messages()[-1]["allowed"])
+
+    async def test_unavailable_reply_does_not_turn_into_mention(self):
+        self.worker.config.update(allowMentions=True, allowReplies=False)
+        await self.worker.on_message(self.reply_event(fetch_error=RuntimeError('unavailable')))
+        self.assertFalse(self.messages()[-1]["allowed"])
+
+    async def test_id_mention_in_unavailable_reply_still_passes(self):
+        from telethon.tl.types import MessageEntityMentionName
+        self.worker.config.update(allowMentions=True, allowReplies=False)
+        await self.worker.on_message(self.reply_event(fetch_error=RuntimeError('unavailable'),
+            entities=[(MessageEntityMentionName(0, 4, 42), "User")]))
+        self.assertTrue(self.messages()[-1]["allowed"])
 
     async def test_old_backlog_suppressed(self):
         await self.worker.on_message(self.event(date=datetime.now(timezone.utc) - timedelta(minutes=10)))

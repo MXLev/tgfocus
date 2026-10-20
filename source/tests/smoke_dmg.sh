@@ -36,7 +36,21 @@ hdiutil detach "$mount_point"
 mounted=false
 app="$test_root/Telegram Focus.app"
 codesign --verify --deep --strict "$app"
+codesign --display --entitlements :- "$app" > "$test_root/entitlements.plist"
+python3 - "$test_root/entitlements.plist" <<'PY'
+import plistlib
+import sys
+with open(sys.argv[1], 'rb') as stream:
+    data = stream.read()
+    entitlements = plistlib.loads(data) if data.strip() else {}
+    assert entitlements.get('com.apple.developer.usernotifications.time-sensitive') is not True
+print('Ad-hoc app does not request the time-sensitive entitlement')
+PY
 test -x "$app/Contents/MacOS/TelegramFocus"
 python3 "$repo_root/source/tests/smoke_worker.py" \
   "$app/Contents/Resources/helper/focus-worker"
+test ! -e "$app/Contents/Resources/Metadata.appintents"
+# Register this installed copy as Finder/Launch Services does on a normal launch.
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app"
+python3 "$repo_root/source/tests/smoke_app.py" "$app"
 echo "DMG checksum, contents, app copy, signature, and installed worker OK"
