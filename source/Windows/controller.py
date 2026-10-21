@@ -1,15 +1,28 @@
 """Tray-client state. Credentials cross only DPAPI and the worker's stdin pipe."""
 import copy
 import re
+import sys
 from collections import deque
 from datetime import datetime
 
-from PySide6.QtCore import QObject, QTimer, Signal, Slot
+from PySide6.QtCore import QAbstractNativeEventFilter, QCoreApplication, QObject, Qt, Signal, Slot
 
 from bridge import WorkerBridge
-from platform_services import NotificationService, read_focus_state
+from platform_services import NotificationService
+from dnd import WnfDndMonitor, is_resume_message
 from protocol import AIFailureGate
 from storage import ConfigStore, CredentialVault, DEFAULT_CONFIG, normalize_config
+
+
+class _ResumeFilter(QAbstractNativeEventFilter):
+    def __init__(self, wake):
+        super().__init__()
+        self.wake = wake
+
+    def nativeEventFilter(self, event_type, message):
+        if bytes(event_type) in (b"windows_generic_MSG", b"windows_dispatcher_MSG") and is_resume_message(message):
+            self.wake()
+        return False, 0
 
 
 class Controller(QObject):
@@ -17,6 +30,7 @@ class Controller(QObject):
     qr_changed = Signal(str)
     simulation_received = Signal(bool, str)
     settings_requested = Signal(str)
+    _dnd_dirty = Signal()
 
     def __init__(self, directory, *, smoke=False, parent=None):
         super().__init__(parent)
@@ -50,9 +64,11 @@ class Controller(QObject):
                 self._secrets = self.vault.load()
             except Exception:
                 self.error_text = "Не удалось прочитать защищённые данные. Войди заново; старый файл не изменён."
-        self.focus_timer = QTimer(self)
-        self.focus_timer.setInterval(15000)
-        self.focus_timer.timeout.connect(self._refresh_focus)
+        self._dnd_dirty.connect(self._dnd_changed, Qt.ConnectionType.QueuedConnection)
+        self.dnd = WnfDndMonitor(self._dnd_dirty.emit)
+        self._resume_filter = _ResumeFilter(self._dnd_dirty.emit)
+        if sys.platform == "win32" and not smoke:
+            QCoreApplication.instance().installNativeEventFilter(self._resume_filter)
         self.bridge = WorkerBridge(self)
         self.bridge.event.connect(self.receive)
         self.bridge.error.connect(self._worker_error)
@@ -116,19 +132,25 @@ class Controller(QObject):
 
     def _configure_focus(self):
         if self.config.get("enabled") and self.config.get("windowsFocusAutomation"):
+            if not self._smoke:
+                self.dnd.start()
             self._refresh_focus()
-            self.focus_timer.start()
         else:
-            self.focus_timer.stop()
+            self.dnd.close()
             self.focus_state = None
             self.focus_status = ("Авто-режим: главный фильтр выключен" if self.config.get("windowsFocusAutomation")
                                  else "Ручное управление фильтром")
+
+    @Slot()
+    def _dnd_changed(self):
+        if not self._closing and self.config.get("enabled") and self.config.get("windowsFocusAutomation"):
+            self._refresh_focus()
 
     def _refresh_focus(self):
         if self._smoke:
             self.focus_state, self.focus_status = None, "Проверка без доступа к пользовательскому состоянию"
         else:
-            self.focus_state, self.focus_status = read_focus_state()
+            self.focus_state, self.focus_status = self.dnd.read()
         self._sync_config()
         self.changed.emit()
 
@@ -231,7 +253,7 @@ class Controller(QObject):
         self.bridge.send({"command": "logout"})
 
     def test_notification(self):
-        if not self._notify("TGFocus", "Проверка доставки. Во время Focus разреши TGFocus в приоритетных уведомлениях Windows."):
+        if not self._notify("TGFocus", "Проверка доставки. Во время «Не беспокоить» разреши TGFocus в приоритетных уведомлениях Windows."):
             self._worker_error("Windows не приняла уведомление. Проверь настройки уведомлений TGFocus.")
 
     def _notify(self, title, body, *, subtitle="", silent=False, url="", on_activate=None):
@@ -297,8 +319,8 @@ class Controller(QObject):
     def _message(self, event):
         allowed = bool(event.get("allowed"))
         if allowed and self.config.get("windowsFocusAutomation"):
-            # A timer can be late after sleep or a busy GUI. Do not deliver a
-            # banner based on a cached-on Focus Session after it has ended.
+            # Recheck the current native state even if a queued WNF signal is
+            # delayed; an old AI/worker result must not deliver after DND ends.
             self._refresh_focus()
             if not self.effective_filter_enabled:
                 return
@@ -317,7 +339,9 @@ class Controller(QObject):
         if self._closing:
             return
         self._closing = True
-        self.focus_timer.stop()
+        self.dnd.close()
+        if sys.platform == "win32" and not self._smoke:
+            QCoreApplication.instance().removeNativeEventFilter(self._resume_filter)
         self.bridge.stop()
         if self.notifications:
             self.notifications.close()

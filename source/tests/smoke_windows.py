@@ -32,6 +32,10 @@ def main():
         worker = executable.parent / "helper/focus-worker.exe"
         if not worker.is_file():
             raise RuntimeError("Portable package is missing its bundled worker")
+        checks = receipt.get("checks", {})
+        print("::notice title=Windows WNF startup smoke::"
+              f"Subscription={checks.get('wnf_subscribed')}; DND={checks.get('focus')}. "
+              "Read-only native startup/cleanup checked; desktop DND transitions not tested.")
         print("Windows frozen app: worker ready, settings reopen, isolated native integration smoke OK")
 
 

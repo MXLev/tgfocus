@@ -12,7 +12,8 @@ from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPainterPath, QPixma
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 from controller import Controller
-from platform_services import NotificationService, read_focus_state, _ensure_winrt
+from platform_services import NotificationService, _ensure_winrt
+from dnd import WnfApi, WnfDndMonitor
 from storage import CredentialVault
 from window import SettingsWindow
 
@@ -52,7 +53,6 @@ def smoke_native(directory):
         return {"platform": "non-Windows UI/IPC test", "native": "not tested"}
     # Import explicitly: unavailable server features are different from missing
     # frozen Python bindings, which must fail the packaging check.
-    import winrt.windows.ui.shell
     import winrt.windows.ui.notifications
     import windows_toasts
     _ensure_winrt()  # Core runtime initialization must work even on a CI server.
@@ -65,12 +65,20 @@ def smoke_native(directory):
     ciphertext = vault.path.read_bytes()
     if b"TEST_SESSION" in ciphertext or b"TEST_KEY_NOT_REAL" in ciphertext:
         raise RuntimeError("Plaintext credentials in DPAPI vault")
-    active, focus_status = read_focus_state()
+    WnfApi()  # Frozen ctypes exports must bind even if Server has no DND shell.
+    observer = WnfDndMonitor(lambda: None)
+    try:
+        subscribed = observer.start()
+        active, focus_status = observer.read()
+    finally:
+        if not observer.close():
+            raise RuntimeError("WNF subscription cleanup failed")
     notifications = NotificationService()
     available = notifications.available
     notifications.close()  # No actual notifications or account/network requests.
     return {"platform": "Windows", "dpapi": "OK", "focus": active,
-            "focus_status": focus_status, "native_notifications_available": available}
+            "focus_status": focus_status, "wnf_subscribed": subscribed,
+            "native_notifications_available": available}
 
 
 def write_receipt(value):

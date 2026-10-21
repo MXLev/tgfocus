@@ -130,28 +130,6 @@ class VaultTests(unittest.TestCase):
         free.assert_called_once()
 
 
-class FocusTests(unittest.TestCase):
-    def query(self, manager):
-        with patch.object(platform_services.sys, "platform", "win32"), \
-             patch("platform_services._focus_manager_type", return_value=manager):
-            return platform_services.read_focus_state()
-
-    def test_focus_session_on_and_off_are_real_booleans(self):
-        for active in [True, False]:
-            manager = SimpleNamespace(is_supported=True, get_default=lambda: SimpleNamespace(is_focus_active=active))
-            value, message = self.query(manager)
-            self.assertIs(value, active)
-            if not active:
-                self.assertIn("не статус", message)
-
-    def test_unsupported_focus_and_query_failures_remain_unknown(self):
-        self.assertIsNone(self.query(SimpleNamespace(is_supported=False))[0])
-        manager = SimpleNamespace(is_supported=True, get_default=Mock(side_effect=OSError("PRIVATE DATA")))
-        active, message = self.query(manager)
-        self.assertIsNone(active)
-        self.assertNotIn("PRIVATE DATA", message)
-
-
 class NotificationTests(unittest.TestCase):
     def setUp(self):
         self.toaster = SimpleNamespace(toastNotifier=SimpleNamespace(setting=0), show_toast=Mock(), clear_toasts=Mock())

@@ -2,6 +2,7 @@ import copy
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -45,6 +46,8 @@ class ControllerTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         for target, value in [("controller.WorkerBridge", FakeBridge),
+                              ("controller.WnfDndMonitor", Mock(return_value=Mock(start=Mock(return_value=True),
+                                  read=Mock(return_value=(None, "Unknown")), close=Mock(return_value=True)))),
                               ("controller.NotificationService", Mock(return_value=Mock(show=Mock(return_value=True)))),
                               ("controller.CredentialVault", Mock(return_value=Mock(load=Mock(return_value={}), save=Mock())))]:
             patcher = patch(target, value)
@@ -66,18 +69,17 @@ class ControllerTests(unittest.TestCase):
         self.assertIn("не сохранены", self.controller.error_text)
 
     def test_unknown_focus_pauses_processing_and_late_messages(self):
-        with patch("controller.read_focus_state", return_value=(None, "Unknown")):
-            self.controller.update_config({"enabled": True, "windowsFocusAutomation": True})
+        self.controller.update_config({"enabled": True, "windowsFocusAutomation": True})
         self.assertFalse(self.controller.effective_filter_enabled)
         self.assertFalse(self.controller.bridge.commands[-1]["config"]["processingEnabled"])
         self.controller.receive({"type": "message", "allowed": True, "text": "private"})
         self.controller.notifications.show.assert_not_called()
-        with patch("controller.read_focus_state", return_value=(True, "Focus session")):
-            self.controller._refresh_focus()
+        self.controller.dnd.read.return_value = (True, "DND on")
+        self.controller._refresh_focus()
         self.assertTrue(self.controller.effective_filter_enabled)
         self.controller.set_filter_enabled(False)
         self.assertFalse(self.controller.effective_filter_enabled)
-        self.assertFalse(self.controller.focus_timer.isActive())
+        self.controller.dnd.close.assert_called()
 
     def test_secret_save_failure_never_sends_new_credential(self):
         self.controller.vault.save.side_effect = OSError("private OS error")
@@ -89,13 +91,45 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(len(self.controller.bridge.commands), 1)
 
     def test_focus_is_checked_again_before_delivering_cached_allowed_message(self):
-        with patch("controller.read_focus_state", return_value=(True, "Session on")):
-            self.controller.update_config({"enabled": True, "windowsFocusAutomation": True})
-        with patch("controller.read_focus_state", return_value=(False, "Session ended")):
-            self.controller.receive({"type": "message", "allowed": True, "text": "late result"})
+        self.controller.dnd.read.return_value = (True, "DND on")
+        self.controller.update_config({"enabled": True, "windowsFocusAutomation": True})
+        self.controller.dnd.read.return_value = (False, "DND ended")
+        self.controller.receive({"type": "message", "allowed": True, "text": "late result"})
         self.controller.notifications.show.assert_not_called()
         self.assertFalse(self.controller.effective_filter_enabled)
         self.assertFalse(self.controller.bridge.commands[-1]["config"]["processingEnabled"])
+
+    def test_native_callback_updates_worker_only_on_gui_thread_and_respects_manual_off(self):
+        self.controller.dnd.read.return_value = (False, "DND off")
+        self.controller.update_config({"enabled": True, "windowsFocusAutomation": True})
+        self.controller.dnd.read.return_value = (True, "DND on")
+        self.controller.dnd.read.reset_mock()
+        thread = threading.Thread(target=self.controller._dnd_dirty.emit)
+        thread.start()
+        thread.join(timeout=2)
+        self.controller.dnd.read.assert_not_called()
+        self.application.processEvents()
+        self.assertTrue(self.controller.effective_filter_enabled)
+        self.assertTrue(self.controller.bridge.commands[-1]["config"]["processingEnabled"])
+        self.controller.set_filter_enabled(False)
+        self.controller.dnd.read.reset_mock()
+        self.controller._dnd_dirty.emit()
+        self.application.processEvents()
+        self.controller.dnd.read.assert_not_called()
+        self.assertFalse(self.controller.effective_filter_enabled)
+
+    def test_resume_refreshes_state_and_shutdown_ignores_queued_wakeups(self):
+        self.controller.dnd.read.return_value = (False, "DND off")
+        self.controller.update_config({"enabled": True, "windowsFocusAutomation": True})
+        self.controller.dnd.read.return_value = (True, "DND on after resume")
+        self.controller._resume_filter.wake()
+        self.application.processEvents()
+        self.assertTrue(self.controller.effective_filter_enabled)
+        self.controller._dnd_dirty.emit()
+        self.controller.shutdown()
+        self.controller.dnd.read.reset_mock()
+        self.application.processEvents()
+        self.controller.dnd.read.assert_not_called()
 
     def test_ai_failure_is_silent_and_click_opens_settings(self):
         self.controller.update_config({"aiEnabled": True})

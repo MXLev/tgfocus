@@ -1,4 +1,4 @@
-"""Native Windows notifications and public Focus Session status (not general DND)."""
+"""Native Windows notifications."""
 import ctypes
 import sys
 import threading
@@ -20,27 +20,6 @@ def _ensure_winrt():
         if getattr(error, "winerror", None) not in (-2147417850, 0x80010106):
             raise
     _apartment.initialized = True
-
-
-def _focus_manager_type():
-    _ensure_winrt()
-    from winrt.windows.ui.shell import FocusSessionManager
-    return FocusSessionManager
-
-
-def read_focus_state():
-    if sys.platform != "win32":
-        return None, "Сеансы Focus доступны только на Windows."
-    try:
-        manager_type = _focus_manager_type()
-        if not manager_type.is_supported:
-            return None, "Эта Windows не поддерживает API сеансов Focus. Используй ручной режим."
-        active = manager_type.get_default().is_focus_active
-        if not isinstance(active, bool):
-            raise ValueError("Unknown focus state")
-        return active, "Сеанс Focus включён" if active else "Сеанс Focus выключен (это не статус «Не беспокоить»)"
-    except Exception:
-        return None, "Не удалось определить состояние сеанса Focus. Доставка приостановлена."
 
 
 def _register_app_id():
