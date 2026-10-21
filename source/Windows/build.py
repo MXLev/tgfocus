@@ -17,7 +17,15 @@ BUILD = WINDOWS / ".build"
 
 
 def run(*args):
-    subprocess.run([str(arg) for arg in args], check=True, cwd=ROOT, env=dict(os.environ, PYTHONUTF8="1"))
+    command = [str(arg) for arg in args]
+    result = subprocess.run(command, cwd=ROOT, env=dict(os.environ, PYTHONUTF8="1"),
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, encoding="utf-8", errors="replace")
+    print(result.stdout, end="", flush=True)
+    if result.returncode:
+        message = result.stdout[-12000:].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print(f"::error title=Windows build check failed::{message}", flush=True)
+        raise subprocess.CalledProcessError(result.returncode, command)
 
 
 def collect_licenses(destination):
