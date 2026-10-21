@@ -19,12 +19,13 @@ def main():
                            PYTHONUTF8="1")
         result = subprocess.run([str(executable), "--startup-smoke-test"], env=environment,
                                 capture_output=True, timeout=60)
+        receipt = json.loads(result_file.read_text(encoding="utf-8")) if result_file.is_file() else {}
         # Windowed PyInstaller applications may have no stdout/stderr at all.
         if result.returncode != 0:
-            raise RuntimeError(f"Frozen Windows startup failed (exit {result.returncode})")
+            raise RuntimeError(f"Frozen Windows startup failed (exit {result.returncode}): "
+                               + str(receipt.get("error", "no smoke receipt")))
         if not result_file.is_file():
             raise RuntimeError("Frozen Windows app exited without a successful smoke receipt")
-        receipt = json.loads(result_file.read_text(encoding="utf-8"))
         if receipt.get("ok") is not True:
             raise RuntimeError("Frozen Windows app did not complete its smoke checks")
         # The shared worker must be part of the exact tested folder, not a system Python.

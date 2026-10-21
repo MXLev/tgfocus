@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import time
+import traceback
 
 from PySide6.QtCore import QLockFile, QPointF, QSignalBlocker, QTimer
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPainterPath, QPixmap
@@ -136,7 +137,8 @@ def main():
                 write_receipt({"ok": True, "checks": result})
                 application.exit(0)
             except Exception as error:
-                write_receipt({"ok": False, "error": type(error).__name__})
+                # Smoke uses isolated, synthetic state and no account secrets.
+                write_receipt({"ok": False, "error": traceback.format_exc()})
                 application.exit(1)
         timer.timeout.connect(check)
         timer.start()
@@ -196,7 +198,7 @@ if __name__ == "__main__":
         sys.exit(main())
     except Exception as error:
         if "--startup-smoke-test" in sys.argv:
-            write_receipt({"ok": False, "error": type(error).__name__})
+            write_receipt({"ok": False, "error": traceback.format_exc()})
         elif sys.stderr is not None:
             print("TGFocus не удалось запустить: " + type(error).__name__, file=sys.stderr)
         sys.exit(1)
