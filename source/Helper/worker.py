@@ -46,6 +46,7 @@ class Worker:
             await asyncio.gather(task, return_exceptions=True)
 
     async def close_client(self):
+        self.config_generation += 1
         await self.cancel_qr()
         if self.ai_test_task:
             self.ai_test_task.cancel()

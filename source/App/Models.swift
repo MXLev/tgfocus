@@ -474,9 +474,10 @@ final class AppModel: ObservableObject {
                 try data.write(to: configURL, options: .atomic)
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
             }
-            updateShortcutMonitoring()
-            syncWorkerConfig()
-        } catch { errorText = "Не удалось сохранить правила: \(error.localizedDescription)" }
+        } catch { errorText = "Не удалось сохранить правила: \(error.localizedDescription). Изменения применены только до перезапуска." }
+        // Apply privacy/pause changes even if persistence fails (for example, disk full).
+        updateShortcutMonitoring()
+        syncWorkerConfig()
         simulationAllowed = nil
         simulationReason = ""
     }

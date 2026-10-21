@@ -246,6 +246,14 @@ class WorkerAITests(unittest.IsolatedAsyncioTestCase):
         await self.worker.on_message(self.event())
         self.assertEqual(self.messages(), [])
 
+    async def test_disconnect_during_ai_request_discards_result(self):
+        async def disconnect(*args):
+            await self.worker.close_client()
+            return Classification("high", "ok")
+        self.worker.ai.classify.side_effect = disconnect
+        await self.worker.on_message(self.event())
+        self.assertEqual(self.messages(), [])
+
     async def test_secret_is_not_retained_in_config_or_echoed(self):
         await self.worker.command(dict(command="config", config=dict(CONFIG, aiApiKey="TEST_SECRET")))
         self.assertEqual(self.worker.ai_key, "TEST_SECRET")
