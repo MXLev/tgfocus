@@ -55,11 +55,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter,
         willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([.banner, .sound, .list])
+        var options: UNNotificationPresentationOptions = [.banner, .list]
+        if notification.request.content.sound != nil { options.insert(.sound) }
+        completionHandler(options)
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
-        if let string = response.notification.request.content.userInfo["url"] as? String,
+        if response.notification.request.content.userInfo["settingsPage"] as? String == "ai" {
+            DispatchQueue.main.async {
+                let model = AppModel.shared
+                model.selectedPage = "ai"
+                SettingsWindowController.shared.show {
+                    NSHostingController(rootView: RootView().environmentObject(model))
+                }
+            }
+        } else if let string = response.notification.request.content.userInfo["url"] as? String,
            let url = URL(string: string), url.scheme == "tg" {
             DispatchQueue.main.async { NSWorkspace.shared.open(url) }
         }

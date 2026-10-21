@@ -244,6 +244,33 @@ struct Activity: Identifiable {
     var url: String
 }
 
+struct AIFailureNotice {
+    private var outage = false
+    private var lastNotice: TimeInterval?
+
+    mutating func resetOutage() { outage = false }
+
+    mutating func shouldNotify(connection: String, now: TimeInterval) -> Bool {
+        if connection == "ready" { outage = false; return false }
+        guard connection == "failed", !outage else { return false }
+        outage = true
+        // One notice per outage, with a five-minute floor for a flapping connection.
+        guard lastNotice.map({ now - $0 >= 300 }) ?? true else { return false }
+        lastNotice = now
+        return true
+    }
+
+    static func content() -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = "Подключение к ИИ не работает"
+        content.body = "ИИ-фильтр временно недоступен. Применяются локальные правила. Проверь ключ, модель и подключение во вкладке «ИИ-фильтр»."
+        content.sound = nil // Always silent, even when Telegram message sounds are enabled.
+        content.interruptionLevel = .active
+        content.userInfo = ["settingsPage": "ai"]
+        return content
+    }
+}
+
 final class LineDecoder: @unchecked Sendable {
     private var pending = Data()
     private var discarding = false
@@ -323,6 +350,7 @@ final class AppModel: ObservableObject {
     private var shortcutSettings = ""
     private var workspaceObservers: [NSObjectProtocol] = []
     private var aiKeys: [String: String] = [:]
+    private var aiFailureNotice = AIFailureNotice()
     private var sleeping = false
     private let startRuntime: Bool
     private(set) var startupAllowed = false
@@ -468,6 +496,7 @@ final class AppModel: ObservableObject {
     }
 
     func saveConfig() {
+        if !config.aiEnabled { aiFailureNotice.resetOutage() }
         do {
             let data = try JSONEncoder().encode(config)
             if let configURL {
@@ -620,6 +649,11 @@ final class AppModel: ObservableObject {
             simulationReason = object["reason"] as? String ?? ""
         case "aiStatus":
             aiStatus = object["message"] as? String ?? ""
+            if config.aiEnabled, aiFailureNotice.shouldNotify(
+                connection: object["connection"] as? String ?? "unchanged",
+                now: ProcessInfo.processInfo.systemUptime) {
+                postNotification(AIFailureNotice.content(), id: "ai-connection-failure")
+            }
         case "message":
             guard effectiveFilterEnabled else { return }
             deliverMessage(object)
@@ -686,6 +720,10 @@ final class AppModel: ObservableObject {
         if config.playSound { content.sound = .default }
         content.interruptionLevel = .active
         content.userInfo = ["url": url]
+        postNotification(content, id: id)
+    }
+
+    private func postNotification(_ content: UNNotificationContent, id: String) {
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil)) { [weak self] error in
             if error != nil {
                 DispatchQueue.main.async { self?.errorText = "macOS не приняла уведомление. Проверь разрешение в настройках." }

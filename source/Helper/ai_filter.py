@@ -79,6 +79,7 @@ def request_priority(provider, model, key, text, instruction):
 class Classification:
     priority: str | None
     status: str
+    connection_failed: bool = False
 
 
 class AIClassifier:
@@ -118,4 +119,5 @@ class AIClassifier:
         except Exception:
             # Provider errors can contain input text and keys. Never surface them.
             self.retry_after = time.monotonic() + 30
-            return Classification(None, "Ошибка ИИ — локальные правила; повтор не раньше чем через 30 сек.")
+            return Classification(None, "Ошибка ИИ — локальные правила; повтор не раньше чем через 30 сек.",
+                                  connection_failed=True)

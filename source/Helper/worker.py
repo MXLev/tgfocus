@@ -240,6 +240,12 @@ class Worker:
     def processing_enabled(self):
         return self.config.get("enabled", True) and self.config.get("processingEnabled", True)
 
+    @staticmethod
+    def report_ai_status(result):
+        # Explicit health signal: capacity limits/missing configuration are not outages.
+        connection = "failed" if result.connection_failed else "ready" if result.priority is not None else "unchanged"
+        emit("aiStatus", message=result.status, connection=connection)
+
     async def on_message(self, event):
         # Keep the connection warm, but do not resolve entities, query mute settings,
         # classify messages, or send IPC events while delivery is paused.
@@ -318,7 +324,7 @@ class Worker:
                 if (not self.processing_enabled() or generation != self.config_generation or
                         mute_generation != self.notify_generation):
                     return  # Never deliver a stale result after a pause/rule/key change.
-                emit("aiStatus", message=classified.status)
+                self.report_ai_status(classified)
                 if classified.priority is not None:
                     threshold = config.get("aiMinimumPriority", "high")
                     allowed = PRIORITIES[classified.priority] >= PRIORITIES.get(threshold, 2)
@@ -360,7 +366,7 @@ class Worker:
                     async def test_ai():
                         result = await self.ai.classify({"text": "Нужна помощь с аварией сервера прямо сейчас."}, config, key)
                         if generation == self.config_generation:
-                            emit("aiStatus", message=result.status)
+                            self.report_ai_status(result)
                     self.ai_test_task = asyncio.create_task(test_ai())
             elif action == "connect":
                 await self.configure(data)

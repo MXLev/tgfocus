@@ -73,10 +73,12 @@ class ClassifierTests(unittest.IsolatedAsyncioTestCase):
         classifier = AIClassifier(request=fail)
         result = await classifier.classify({"text": "PRIVATE_MESSAGE"}, CONFIG, "TEST_KEY")
         self.assertIsNone(result.priority)
+        self.assertTrue(result.connection_failed)
         self.assertNotIn("TEST_KEY", result.status)
         self.assertNotIn("PRIVATE_MESSAGE", result.status)
         again = await classifier.classify({"text": "other"}, CONFIG, "TEST_KEY")
         self.assertIn("пауза", again.status)
+        self.assertFalse(again.connection_failed)
         self.assertEqual(len(classifier.calls), 1)
         self.assertEqual(classifier.active, 0)
 
@@ -123,6 +125,7 @@ class ClassifierTests(unittest.IsolatedAsyncioTestCase):
         try:
             result = await classifier.classify({"text": "a"}, CONFIG, "key")
             self.assertIsNone(result.priority)
+            self.assertTrue(result.connection_failed)
             self.assertEqual(classifier.active, 1)
         finally:
             gate.set()
@@ -170,6 +173,18 @@ class WorkerAITests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.messages()[-1]["allowed"])
         await self.worker.on_message(self.event(id=8))
         self.assertFalse(self.messages()[-1]["allowed"])
+
+    async def test_outage_is_distinct_from_limits_and_recovery_in_ipc(self):
+        for index, (result, expected) in enumerate([
+            (Classification(None, "redacted failure", connection_failed=True), "failed"),
+            (Classification(None, "local capacity limit"), "unchanged"),
+            (Classification("high", "recovered"), "ready"),
+        ]):
+            self.worker.ai.classify.return_value = result
+            await self.worker.on_message(self.event(id=index))
+            statuses = [json.loads(line) for line in self.output.getvalue().splitlines()
+                        if json.loads(line)["type"] == "aiStatus"]
+            self.assertEqual(statuses[-1]["connection"], expected)
 
     async def test_excluded_private_chat_never_calls_ai_and_uses_local_rules(self):
         self.worker.config["aiExcludedChats"] = [dict(id="10", name="Private")]

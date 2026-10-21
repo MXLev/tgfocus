@@ -9,6 +9,22 @@ struct NativeTests {
     @MainActor static func main() async throws {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.accessory)
+        var failureNotice = AIFailureNotice()
+        precondition(!failureNotice.shouldNotify(connection: "unchanged", now: 0))
+        precondition(failureNotice.shouldNotify(connection: "failed", now: 0))
+        precondition(!failureNotice.shouldNotify(connection: "failed", now: 600)) // Same outage.
+        precondition(!failureNotice.shouldNotify(connection: "unchanged", now: 600))
+        precondition(!failureNotice.shouldNotify(connection: "ready", now: 601))
+        precondition(failureNotice.shouldNotify(connection: "failed", now: 602)) // A new outage.
+        precondition(!failureNotice.shouldNotify(connection: "ready", now: 603))
+        precondition(!failureNotice.shouldNotify(connection: "failed", now: 604)) // Flapping, cooldown.
+        precondition(!failureNotice.shouldNotify(connection: "failed", now: 1000))
+        failureNotice.resetOutage()
+        precondition(failureNotice.shouldNotify(connection: "failed", now: 1001))
+        let failureContent = AIFailureNotice.content()
+        precondition(failureContent.sound == nil)
+        precondition(failureContent.userInfo["settingsPage"] as? String == "ai")
+        precondition(failureContent.body.contains("локальные правила"))
         let settings = SettingsWindowController()
         var creations = 0
         func content() -> NSViewController {
