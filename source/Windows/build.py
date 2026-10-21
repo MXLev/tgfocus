@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import traceback
 
 WINDOWS = Path(__file__).resolve().parent
 SOURCE = WINDOWS.parent
@@ -85,6 +86,7 @@ def main():
         "--specpath", BUILD, "--paths", WINDOWS,
         "--additional-hooks-dir", WINDOWS / "hooks",
         "--collect-all", "windows_toasts", "--collect-all", "winrt",
+        "--hidden-import", "PySide6.support.deprecated",
         "--hidden-import", "winrt.windows.ui.shell", "--hidden-import", "winrt.windows.ui.notifications",
         "--hidden-import", "winrt.windows.foundation", "--hidden-import", "winrt.windows.foundation.collections",
         "--hidden-import", "winrt.windows.data.xml.dom",
@@ -134,4 +136,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:
+        message = "".join(traceback.format_exception(error))[-12000:]
+        message = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print(f"::error title=Windows packaging failed::{message}", flush=True)
+        raise
