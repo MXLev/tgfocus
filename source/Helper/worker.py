@@ -7,7 +7,8 @@ import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 
-from rules import decide
+from rules import decide, Decision
+from ai_filter import AIClassifier, eligible as ai_eligible, PRIORITIES, LABELS
 
 logging.disable(logging.CRITICAL)
 
@@ -33,6 +34,10 @@ class Worker:
         self.current_usernames = set()
         self.notify_cache = OrderedDict()
         self.notify_generation = 0
+        self.config_generation = 0
+        self.ai = AIClassifier()
+        self.ai_key = ""
+        self.ai_test_task = None
 
     async def cancel_qr(self):
         task, self.qr_task = self.qr_task, None
@@ -42,6 +47,9 @@ class Worker:
 
     async def close_client(self):
         await self.cancel_qr()
+        if self.ai_test_task:
+            self.ai_test_task.cancel()
+            self.ai_test_task = None
         self.current_user_id = None
         self.current_usernames = set()
         self.invalidate_notification_settings()
@@ -68,7 +76,7 @@ class Worker:
         self.client = TelegramClient(
             StringSession(request.get("session", "")), api_id, api_hash,
             device_model="Telegram Focus for Mac", system_version="macOS",
-            app_version="1.4.0", connection_retries=3, request_retries=2,
+            app_version="1.5.0", connection_retries=3, request_retries=2,
             retry_delay=2, timeout=10, flood_sleep_threshold=0,
         )
         self.client.add_event_handler(self.on_message, events.NewMessage(incoming=True))
@@ -236,6 +244,7 @@ class Worker:
         # classify messages, or send IPC events while delivery is paused.
         if not self.processing_enabled():
             return
+        config, generation = self.config, self.config_generation
         try:
             key = (event.chat_id, event.id)
             if key in self.seen:
@@ -293,13 +302,26 @@ class Worker:
                        mentioned=mentioned, replyToMe=reply_to_me,
                        service=bool(event.message.action),
                        stale=(datetime.now(timezone.utc) - event.date).total_seconds() > 120)
-            result = decide(msg, self.config)
-            if result.allowed:
+            result = decide(msg, config)
+            use_ai = ai_eligible(msg, config)
+            if result.allowed or use_ai:
                 muted = await self.is_chat_muted(event, kind)
                 msg.update(muted=muted is True, muteUnknown=muted is None)
-                result = decide(msg, self.config)
-            if not self.processing_enabled():
-                return  # The user may pause while a Telegram request is in flight.
+                result = decide(msg, config)
+            mute_generation = self.notify_generation
+            if not self.processing_enabled() or generation != self.config_generation:
+                return
+            # Muted and excluded chats are rejected before any external request.
+            if use_ai and ai_eligible(msg, config):
+                classified = await self.ai.classify(msg, config, self.ai_key)
+                if (not self.processing_enabled() or generation != self.config_generation or
+                        mute_generation != self.notify_generation):
+                    return  # Never deliver a stale result after a pause/rule/key change.
+                emit("aiStatus", message=classified.status)
+                if classified.priority is not None:
+                    threshold = config.get("aiMinimumPriority", "high")
+                    allowed = PRIORITIES[classified.priority] >= PRIORITIES.get(threshold, 2)
+                    result = Decision(allowed, "ИИ: " + LABELS[classified.priority] + " приоритет")
             # Only forwarded messages include their body; suppressed messages leave no text in the UI.
             emit("message", allowed=result.allowed, reason=result.reason, title=title,
                  sender=sender_name, kind=kind, text=display[:600] if result.allowed else "",
@@ -325,8 +347,20 @@ class Worker:
                 emit("error", message=f"Telegram просил подождать. Осталось около {remaining} сек.", recoverable=True)
                 return True
             if action == "config":
-                self.config = data["config"]
+                config = dict(data["config"])
+                key = config.pop("aiApiKey", "")
+                if config != self.config or key != self.ai_key:
+                    self.config_generation += 1
+                self.config, self.ai_key = config, key
                 emit("configSaved")
+            elif action == "testAI":
+                if not self.ai_test_task or self.ai_test_task.done():
+                    config, generation, key = self.config, self.config_generation, self.ai_key
+                    async def test_ai():
+                        result = await self.ai.classify({"text": "Нужна помощь с аварией сервера прямо сейчас."}, config, key)
+                        if generation == self.config_generation:
+                            emit("aiStatus", message=result.status)
+                    self.ai_test_task = asyncio.create_task(test_ai())
             elif action == "connect":
                 await self.configure(data)
             elif action == "phone":
@@ -422,4 +456,10 @@ class Worker:
 
 
 if __name__ == "__main__":
-    asyncio.run(Worker().run())
+    if sys.argv[1:] == ["--check-ai-tls"]:
+        import ssl
+        import certifi
+        assert ssl.create_default_context(cafile=certifi.where()).cert_store_stats()["x509_ca"] > 0
+        print("AI HTTPS: bundled CA certificates loaded")
+    else:
+        asyncio.run(Worker().run())

@@ -75,8 +75,8 @@ struct TelegramFocusApp: App {
         MenuBarExtra {
             MenuContent().environmentObject(model)
         } label: {
-            Image(nsImage: FilterPresentation.icon(enabled: model.config.enabled))
-                .id(model.config.enabled)
+            Image(nsImage: FilterPresentation.icon(enabled: model.effectiveFilterEnabled))
+                .id(model.effectiveFilterEnabled)
                 .accessibilityLabel("Telegram Focus")
                 .help("Telegram Focus")
         }
@@ -87,8 +87,9 @@ struct MenuContent: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
         Text(model.connected ? "Telegram: \(model.accountName)" : model.statusText)
-        Button(model.filterTitle) { model.setFilterEnabled(!model.config.enabled) }
-        Text("Ручное управление фильтром")
+        Text(model.filterTitle)
+        Button(model.config.enabled ? "Выключить фильтр" : "Включить фильтр") { model.setFilterEnabled(!model.config.enabled) }
+        Text(model.automationStatus)
         Text("Пропущено: \(model.passed) · Заглушено: \(model.suppressed)")
         Divider()
         Button("Открыть настройки…") {

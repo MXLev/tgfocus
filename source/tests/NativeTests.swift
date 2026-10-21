@@ -6,7 +6,7 @@ import UserNotifications
 
 @main
 struct NativeTests {
-    @MainActor static func main() throws {
+    @MainActor static func main() async throws {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.accessory)
         let settings = SettingsWindowController()
@@ -44,6 +44,47 @@ struct NativeTests {
         model.setFilterEnabled(false)
         model.receive(["type": "message", "allowed": true, "title": "test"])
         precondition(model.passed == 0 && model.suppressed == 2)
+        model.config.shortcutAutomation = true
+        model.setFilterEnabled(true)
+        precondition(!model.effectiveFilterEnabled) // Unknown must never allow delivery.
+        model.shortcutState = .on
+        precondition(model.effectiveFilterEnabled && model.filterTitle == "Фильтр включён")
+        model.shortcutState = .off
+        precondition(!model.effectiveFilterEnabled && model.filterTitle == "Фильтр выключен")
+        model.receive(["type": "message", "allowed": true, "title": "late notification"])
+        precondition(model.passed == 0 && model.suppressed == 2)
+        model.shortcutState = .on
+        model.setFilterEnabled(false)
+        precondition(!model.effectiveFilterEnabled)
+        for (value, expected) in [("ON\n", ShortcutFocusState.on), ("OFF", .off), ("", .unknown),
+                                  ("Work", .unknown), ("1", .unknown), ("on", .unknown)] {
+            precondition(ShortcutFocusState.parse(Data(value.utf8)) == expected)
+        }
+        precondition(ShortcutFocusState.parse(Data(repeating: 65, count: 33)) == .unknown)
+        let fixture = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        try Data("ON".utf8).write(to: fixture)
+        var observed: [ShortcutFocusState] = []
+        let monitor = ShortcutFocusMonitor(executable: URL(fileURLWithPath: "/bin/cp"),
+            arguments: { _, output in [fixture.path, output.path] })
+        monitor.onResult = { observed.append($0) }
+        monitor.start(name: "fixture", interval: 30)
+        for _ in 0..<100 where observed.last != .on { try await Task.sleep(for: .milliseconds(20)) }
+        precondition(observed.last == .on)
+        try Data("OFF".utf8).write(to: fixture)
+        monitor.check()
+        for _ in 0..<100 where observed.last != .off { try await Task.sleep(for: .milliseconds(20)) }
+        precondition(observed.last == .off)
+        monitor.stop()
+        precondition(observed.last == .unknown)
+        let timedMonitor = ShortcutFocusMonitor(executable: URL(fileURLWithPath: "/bin/sleep"), timeoutSeconds: 0.1,
+            arguments: { _, _ in ["5"] })
+        var timedResults = 0
+        timedMonitor.onResult = { state in precondition(state == .unknown); timedResults += 1 }
+        timedMonitor.start(name: "timeout", interval: 30)
+        for _ in 0..<100 where timedResults < 2 { try await Task.sleep(for: .milliseconds(20)) }
+        precondition(timedResults >= 2)
+        timedMonitor.stop()
         let lockDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: lockDirectory) }
         do {
@@ -73,7 +114,7 @@ struct NativeTests {
         let recovered = oversizedDecoder.consume(Data("\n{\"type\":\"ok\"}\n".utf8))
         precondition(recovered.count == 1 && recovered[0]["type"] as? String == "ok")
         var config = FilterConfig()
-        precondition(!config.enabled && !config.onlyDuringFocus)
+        precondition(!config.enabled && !config.onlyDuringFocus && !config.shortcutAutomation && !config.aiEnabled)
         config.enabled = true
         config.people = [Person(id: "42", name: "Важный")]
         config.chats = [ChatRule(id: "-100123", name: "Учёба")]
@@ -85,6 +126,16 @@ struct NativeTests {
         let raw = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         precondition(raw["people"] is [[String: Any]])
         precondition(raw["apiHash"] == nil && raw["session"] == nil)
+        precondition(raw["aiApiKey"] == nil)
+        var optional = config
+        optional.shortcutAutomation = true
+        optional.aiEnabled = true
+        optional.aiExcludedChats = [Person(id: "42", name: "Не отправлять")]
+        let optionalDecoded = try JSONDecoder().decode(FilterConfig.self, from: JSONEncoder().encode(optional))
+        precondition(optionalDecoded.shortcutAutomation && optionalDecoded.aiEnabled)
+        precondition(optionalDecoded.aiExcludedChats == optional.aiExcludedChats)
+        let oldMinimal = try JSONDecoder().decode(FilterConfig.self, from: Data("{\"enabled\":true}".utf8))
+        precondition(oldMinimal.enabled && !oldMinimal.shortcutAutomation && !oldMinimal.aiEnabled)
         var legacy = raw
         legacy.removeValue(forKey: "allowMentions")
         legacy.removeValue(forKey: "allowReplies")
@@ -129,6 +180,7 @@ struct NativeTests {
         print("Native startup lock: duplicate instance rejected, lock released after exit OK")
         print("Native settings window: opens and reopens the same retained window OK")
         print("Native manual filter: shared controls, pause and safe legacy preference migration OK")
+        print("Native optional modes: strict ON/OFF, child process output and timeout, effective state and secret separation OK")
         print("Native checks: split Unicode IPC, invalid frames, config persistence and secret separation OK")
         print("Native QR rendering: generated image decodes to the exact login URI OK")
     }
