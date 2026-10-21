@@ -93,6 +93,16 @@ struct FilterConfig: Codable {
     var playSound = true
     var allowMentions = true
     var allowReplies = true
+    var shortcutAutomation = false
+    var shortcutName = "TGFocus State"
+    var shortcutInterval = 30
+    var aiEnabled = false
+    var aiProvider = "openrouter"
+    var aiModel = "openrouter/free"
+    var aiMinimumPriority = "high"
+    var aiInstruction = ""
+    var aiHourlyLimit = 30
+    var aiExcludedChats: [Person] = []
     // Retained only to migrate experimental preferences; the release is manual.
     private(set) var onlyDuringFocus = false
     private(set) var migratedFromAutomaticMode = false
@@ -101,6 +111,8 @@ struct FilterConfig: Codable {
 
     enum CodingKeys: String, CodingKey {
         case enabled, allPrivate, keywords, people, chats, showPreview, playSound, allowMentions, allowReplies, onlyDuringFocus
+        case shortcutAutomation, shortcutName, shortcutInterval, aiEnabled, aiProvider, aiModel
+        case aiMinimumPriority, aiInstruction, aiHourlyLimit, aiExcludedChats
     }
 
     init(from decoder: Decoder) throws {
@@ -115,6 +127,19 @@ struct FilterConfig: Codable {
         allowMentions = try values.decodeIfPresent(Bool.self, forKey: .allowMentions) ?? true
         // The old switch controlled both; preserve its value when migrating.
         allowReplies = try values.decodeIfPresent(Bool.self, forKey: .allowReplies) ?? allowMentions
+        shortcutAutomation = try values.decodeIfPresent(Bool.self, forKey: .shortcutAutomation) ?? false
+        shortcutName = try values.decodeIfPresent(String.self, forKey: .shortcutName) ?? shortcutName
+        shortcutInterval = try values.decodeIfPresent(Int.self, forKey: .shortcutInterval) ?? 30
+        if ![15, 30, 60].contains(shortcutInterval) { shortcutInterval = 30 }
+        aiEnabled = try values.decodeIfPresent(Bool.self, forKey: .aiEnabled) ?? false
+        aiProvider = try values.decodeIfPresent(String.self, forKey: .aiProvider) ?? aiProvider
+        if !["openrouter", "deepseek"].contains(aiProvider) { aiProvider = "openrouter" }
+        aiModel = try values.decodeIfPresent(String.self, forKey: .aiModel) ?? aiModel
+        aiMinimumPriority = try values.decodeIfPresent(String.self, forKey: .aiMinimumPriority) ?? "high"
+        if !["normal", "high", "urgent"].contains(aiMinimumPriority) { aiMinimumPriority = "high" }
+        aiInstruction = String((try values.decodeIfPresent(String.self, forKey: .aiInstruction) ?? "").prefix(2000))
+        aiHourlyLimit = max(1, min(300, try values.decodeIfPresent(Int.self, forKey: .aiHourlyLimit) ?? 30))
+        aiExcludedChats = try values.decodeIfPresent([Person].self, forKey: .aiExcludedChats) ?? []
         migratedFromAutomaticMode = try values.decodeIfPresent(Bool.self, forKey: .onlyDuringFocus) ?? false
         if migratedFromAutomaticMode { enabled = false }
     }
@@ -143,6 +168,33 @@ enum QRRenderer {
 
 enum CredentialStore {
     static let service = "local.mxlev.TelegramFocus"
+    static func loadAIKey(provider: String) throws -> String? {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service, kSecAttrAccount as String: "ai-" + provider,
+            kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = item as? Data,
+              let key = String(data: data, encoding: .utf8) else { throw KeychainError(status: status) }
+        return key
+    }
+    static func saveAIKey(_ key: String, provider: String) throws {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service, kSecAttrAccount as String: "ai-" + provider]
+        if key.isEmpty {
+            let status = SecItemDelete(query as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else { throw KeychainError(status: status) }
+            return
+        }
+        let attributes: [String: Any] = [kSecValueData as String: Data(key.utf8),
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
+        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            status = SecItemAdd(query.merging(attributes) { _, value in value } as CFDictionary, nil)
+        }
+        guard status == errSecSuccess else { throw KeychainError(status: status) }
+    }
     static func load() throws -> Credentials? {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service, kSecAttrAccount as String: "telegram",
@@ -190,6 +242,33 @@ struct Activity: Identifiable {
     var reason: String
     var allowed: Bool
     var url: String
+}
+
+struct AIFailureNotice {
+    private var outage = false
+    private var lastNotice: TimeInterval?
+
+    mutating func resetOutage() { outage = false }
+
+    mutating func shouldNotify(connection: String, now: TimeInterval) -> Bool {
+        if connection == "ready" { outage = false; return false }
+        guard connection == "failed", !outage else { return false }
+        outage = true
+        // One notice per outage, with a five-minute floor for a flapping connection.
+        guard lastNotice.map({ now - $0 >= 300 }) ?? true else { return false }
+        lastNotice = now
+        return true
+    }
+
+    static func content() -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = "Подключение к ИИ не работает"
+        content.body = "ИИ-фильтр временно недоступен. Применяются локальные правила. Проверь ключ, модель и подключение во вкладке «ИИ-фильтр»."
+        content.sound = nil // Always silent, even when Telegram message sounds are enabled.
+        content.interruptionLevel = .active
+        content.userInfo = ["settingsPage": "ai"]
+        return content
+    }
 }
 
 final class LineDecoder: @unchecked Sendable {
@@ -253,6 +332,10 @@ final class AppModel: ObservableObject {
     @Published var selectedPage = "overview"
     @Published var showLogoutConfirmation = false
     @Published var startupNotice = ""
+    @Published var shortcutState = ShortcutFocusState.unknown
+    @Published var shortcutLastCheck: Date?
+    @Published var aiStatus = "ИИ выключен"
+    @Published var aiKeyProviders: Set<String> = []
     @Published var qrImage: NSImage?
     @Published var qrExpiresAt = Date.distantPast
     @Published var deliveryMethod = ""
@@ -263,11 +346,29 @@ final class AppModel: ObservableObject {
     private var outputPipe: Pipe?
     private var shouldReconnect = false
     private var configURL: URL?
+    private let shortcutMonitor = ShortcutFocusMonitor()
+    private var shortcutSettings = ""
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var aiKeys: [String: String] = [:]
+    private var aiFailureNotice = AIFailureNotice()
+    private var sleeping = false
+    private let startRuntime: Bool
     private(set) var startupAllowed = false
 
     var connected: Bool { state == "connected" }
-    var effectiveFilterEnabled: Bool { config.enabled }
-    var filterTitle: String { FilterPresentation.title(enabled: config.enabled) }
+    var effectiveFilterEnabled: Bool {
+        config.enabled && (!config.shortcutAutomation || (!sleeping && shortcutState == .on))
+    }
+    var filterTitle: String { FilterPresentation.title(enabled: effectiveFilterEnabled) }
+    var automationStatus: String {
+        guard config.shortcutAutomation else { return "Ручное управление фильтром" }
+        guard config.enabled else { return "Авто-режим: главный фильтр выключен" }
+        switch shortcutState {
+        case .on: return "Авто-режим: Focus включён"
+        case .off: return "Авто-режим: Focus выключен, доставка на паузе"
+        case .unknown: return "Авто-режим: состояние неизвестно, доставка на паузе"
+        }
+    }
     var filterBinding: Binding<Bool> {
         Binding(get: { self.config.enabled }, set: { self.setFilterEnabled($0) })
     }
@@ -279,6 +380,7 @@ final class AppModel: ObservableObject {
     var statusColor: Color { connected ? .green : state == "connecting" || state == "reconnecting" ? .orange : .secondary }
 
     init(startRuntime: Bool = true) {
+        self.startRuntime = startRuntime
         guard startRuntime else { return }
         guard StartupGuard.allowLaunch() else {
             DispatchQueue.main.async { NSApp.terminate(nil) }
@@ -309,7 +411,35 @@ final class AppModel: ObservableObject {
                 shouldReconnect = !saved.session.isEmpty
             }
         } catch { errorText = error.localizedDescription }
+        for provider in ["openrouter", "deepseek"] {
+            do {
+                if let key = try CredentialStore.loadAIKey(provider: provider) {
+                    aiKeys[provider] = key
+                    aiKeyProviders.insert(provider)
+                }
+            } catch { errorText = "Не удалось прочитать ключ ИИ из Связки ключей." }
+        }
+        shortcutMonitor.onResult = { [weak self] state in
+            guard let self else { return }
+            self.shortcutState = state
+            self.shortcutLastCheck = Date()
+            self.syncWorkerConfig()
+        }
+        let center = NSWorkspace.shared.notificationCenter
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.sleeping = true
+                self?.updateShortcutMonitoring()
+            }
+        })
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.sleeping = false
+                self?.updateShortcutMonitoring()
+            }
+        })
         startHelper()
+        updateShortcutMonitoring()
         Task { await refreshNotificationStatus() }
     }
 
@@ -366,14 +496,17 @@ final class AppModel: ObservableObject {
     }
 
     func saveConfig() {
+        if !config.aiEnabled { aiFailureNotice.resetOutage() }
         do {
             let data = try JSONEncoder().encode(config)
             if let configURL {
                 try data.write(to: configURL, options: .atomic)
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
             }
-            syncWorkerConfig()
-        } catch { errorText = "Не удалось сохранить правила: \(error.localizedDescription)" }
+        } catch { errorText = "Не удалось сохранить правила: \(error.localizedDescription). Изменения применены только до перезапуска." }
+        // Apply privacy/pause changes even if persistence fails (for example, disk full).
+        updateShortcutMonitoring()
+        syncWorkerConfig()
         simulationAllowed = nil
         simulationReason = ""
     }
@@ -385,8 +518,41 @@ final class AppModel: ObservableObject {
             var object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
             // Runtime processing state is separate from saved rules and simulation.
             object["processingEnabled"] = effectiveFilterEnabled
+            // The key exists only in Keychain and stdin IPC, never rules.json or argv.
+            object["aiApiKey"] = config.aiEnabled ? (aiKeys[config.aiProvider] ?? "") : ""
             send(["command": "config", "config": object])
         } catch { errorText = "Не удалось передать настройки фильтра." }
+    }
+
+    private func updateShortcutMonitoring() {
+        guard startRuntime && !Self.isStartupSmokeTest else { return }
+        let active = config.shortcutAutomation && config.enabled && !sleeping
+        let settings = active ? "\(config.shortcutName)|\(config.shortcutInterval)" : ""
+        guard settings != shortcutSettings else { return }
+        shortcutSettings = settings
+        if active {
+            shortcutMonitor.start(name: config.shortcutName, interval: Double(config.shortcutInterval))
+        } else {
+            shortcutMonitor.stop()
+        }
+    }
+
+    func checkShortcut() { shortcutMonitor.check() }
+
+    func saveAIKey(_ value: String) {
+        let key = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard key.count <= 4096, !key.contains("\n"), !key.contains("\r") else {
+            errorText = "Ключ должен быть одной строкой, не длиннее 4096 символов."
+            return
+        }
+        do {
+            try CredentialStore.saveAIKey(key, provider: config.aiProvider)
+            aiKeys[config.aiProvider] = key.isEmpty ? nil : key
+            if key.isEmpty { aiKeyProviders.remove(config.aiProvider) }
+            else { aiKeyProviders.insert(config.aiProvider) }
+            aiStatus = key.isEmpty ? "Ключ удалён" : "Ключ сохранён. Можно проверить подключение."
+            syncWorkerConfig()
+        } catch { errorText = "Не удалось сохранить ключ ИИ в Связке ключей." }
     }
 
     func connect() {
@@ -481,8 +647,15 @@ final class AppModel: ObservableObject {
         case "simulation":
             simulationAllowed = object["allowed"] as? Bool ?? false
             simulationReason = object["reason"] as? String ?? ""
+        case "aiStatus":
+            aiStatus = object["message"] as? String ?? ""
+            if config.aiEnabled, aiFailureNotice.shouldNotify(
+                connection: object["connection"] as? String ?? "unchanged",
+                now: ProcessInfo.processInfo.systemUptime) {
+                postNotification(AIFailureNotice.content(), id: "ai-connection-failure")
+            }
         case "message":
-            guard config.enabled else { return }
+            guard effectiveFilterEnabled else { return }
             deliverMessage(object)
         default: break
         }
@@ -490,7 +663,7 @@ final class AppModel: ObservableObject {
 
     func deliverMessage(_ object: [String: Any]) {
         let ruleAllowed = object["allowed"] as? Bool ?? false
-        let deliveryEnabled = config.enabled
+        let deliveryEnabled = effectiveFilterEnabled
         let allowed = ruleAllowed && deliveryEnabled
         let title = object["title"] as? String ?? "Telegram"
         let reason = ruleAllowed && !deliveryEnabled ?
@@ -547,6 +720,10 @@ final class AppModel: ObservableObject {
         if config.playSound { content.sound = .default }
         content.interruptionLevel = .active
         content.userInfo = ["url": url]
+        postNotification(content, id: id)
+    }
+
+    private func postNotification(_ content: UNNotificationContent, id: String) {
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil)) { [weak self] error in
             if error != nil {
                 DispatchQueue.main.async { self?.errorText = "macOS не приняла уведомление. Проверь разрешение в настройках." }
@@ -571,6 +748,9 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() {
+        shortcutMonitor.stop()
+        for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
+        workspaceObservers.removeAll()
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         if process?.isRunning == true {
             send(["command": "quit"])

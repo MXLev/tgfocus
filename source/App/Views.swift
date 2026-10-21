@@ -26,6 +26,7 @@ struct RootView: View {
     @EnvironmentObject var model: AppModel
     let pages = [("overview", "Обзор", "slider.horizontal.3"),
                  ("rules", "Правила", "line.3.horizontal.decrease.circle"),
+                 ("ai", "ИИ-фильтр", "sparkles"),
                  ("connection", "Подключение", "link"),
                  ("guide", "Как настроить", "questionmark.circle")]
     var body: some View {
@@ -58,7 +59,7 @@ struct RootView: View {
                         Text(model.connected ? (model.accountName.isEmpty ? "Telegram подключён" : model.accountName) : "Нет подключения")
                             .font(.system(size: 11, weight: .medium)).lineLimit(1)
                     }
-                    Text("Правила работают на этом Mac")
+                    Text(model.config.aiEnabled ? "ИИ-фильтр: внешний провайдер" : "Правила работают на этом Mac")
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                     Text("Версия \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") · Apple Silicon")
                         .font(.system(size: 10)).foregroundStyle(.tertiary)
@@ -80,6 +81,7 @@ struct RootView: View {
                     }
                     switch model.selectedPage {
                     case "rules": RulesView()
+                    case "ai": AISettingsView()
                     case "connection": ConnectionView()
                     case "guide": GuideView()
                     default: OverviewView()
@@ -120,11 +122,11 @@ struct OverviewView: View {
         HStack(alignment: .top, spacing: 20) {
             VStack(alignment: .leading, spacing: 15) {
                 Label(model.filterTitle.uppercased(),
-                      systemImage: model.config.enabled ? "checkmark.shield.fill" : "pause.circle.fill")
+                      systemImage: model.effectiveFilterEnabled ? "checkmark.shield.fill" : "pause.circle.fill")
                     .font(.system(size: 11, weight: .bold)).tracking(1.2)
-                Text(model.config.enabled ? "Личное. Срочное. Твоё." : "Можно выдохнуть.")
+                Text(model.effectiveFilterEnabled ? "Личное. Срочное. Твоё." : "Можно выдохнуть.")
                     .font(.system(size: 24, weight: .semibold, design: .rounded))
-                Text(model.config.enabled ? "Покажем сообщения, которые подходят под твои правила." : "Telegram Focus сейчас не показывает уведомления.")
+                Text(model.effectiveFilterEnabled ? "Покажем сообщения, которые подходят под твои правила." : "Telegram Focus сейчас не показывает уведомления.")
                     .font(.system(size: 13)).opacity(0.85)
                 if !model.connected {
                     Button("Подключить Telegram →") { model.selectedPage = "connection" }
@@ -137,8 +139,11 @@ struct OverviewView: View {
                 }
             }
             Spacer(minLength: 0)
-            Toggle("Фильтр", isOn: model.filterBinding).labelsHidden().toggleStyle(.switch)
-                .controlSize(.large).tint(.white.opacity(0.4))
+            VStack(alignment: .trailing, spacing: 6) {
+                Toggle("Разрешить работу фильтра", isOn: model.filterBinding).labelsHidden().toggleStyle(.switch)
+                    .controlSize(.large).tint(.white.opacity(0.4))
+                Text(model.config.enabled ? "Главный фильтр: вкл." : "Главный фильтр: выкл.").font(.caption)
+            }
         }
         .padding(25).frame(maxWidth: .infinity, alignment: .leading)
         .foregroundStyle(.white)
@@ -156,13 +161,7 @@ struct OverviewView: View {
                 Button("Понятно") { model.startupNotice = "" }
             }
         }
-        Panel(title: "Ручное управление", icon: "hand.tap") {
-            Text("Включай фильтр переключателем выше или через значок самолётика в строке меню. Перед выходом из фокусирования macOS выключай фильтр TGFocus вручную.")
-                .font(.callout).foregroundStyle(.secondary)
-            Text("Если обычный Telegram тоже показывает уведомления, одно сообщение может прийти дважды. Для работы во время фокусирования разреши Telegram Focus в списке приложений этого режима, а обычный Telegram оставь заглушённым.")
-                .font(.caption).foregroundStyle(.secondary)
-            Button("Как настроить →") { model.selectedPage = "guide" }.buttonStyle(.link)
-        }
+        AutomationSettingsView()
         if !model.notificationsAllowed {
             Panel(title: "Разреши уведомления", icon: "bell") {
                 HStack {
@@ -201,7 +200,7 @@ struct OverviewView: View {
                     .buttonStyle(.link).font(.caption)
             }
         }
-        Text("Фильтр работает, пока приложение запущено, а Mac не спит. По умолчанию уведомления приостановлены вне фокусирования. Настрой разрешения во вкладке «Как настроить».")
+        Text("Фильтр работает, пока приложение запущено, а Mac не спит. По умолчанию управление ручное. Авто-режим через «Команды» включается отдельно. Настрой разрешения во вкладке «Как настроить».")
             .font(.caption).foregroundStyle(.secondary)
     }
 }
@@ -298,14 +297,14 @@ struct RulesView: View {
                         Spacer()
                         Button { model.config.chats.removeAll { $0.id == chat.id }; model.saveConfig() } label: { Image(systemName: "minus.circle") }.buttonStyle(.borderless)
                     }
-                    Toggle("Только с ключевыми словами", isOn: $chat.keywordsOnly)
+                    Toggle(model.config.aiEnabled ? "Проверять важность (ИИ или локальные слова)" : "Только с ключевыми словами", isOn: $chat.keywordsOnly)
                         .font(.caption).onChange(of: chat.keywordsOnly) { model.saveConfig() }
                     Divider()
                 }
             }
         }
         Panel(title: "Проверить правило", icon: "play.circle") {
-            Text("Проверка примера не учитывает фокусирование и mute-настройки реального чата.")
+            Text("Проверяются только локальные правила, без обращения к ИИ. Фокусирование и mute-настройки реального чата не учитываются.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Picker("Тип чата", selection: $testKind) {
@@ -372,13 +371,13 @@ struct DialogPicker: View {
     let mode: String
     @ViewState<String> private var search = ""
     var choices: [Dialog] {
-        model.dialogs.filter { (mode == "people" ? $0.kind == "private" : $0.kind != "private") &&
+        model.dialogs.filter { (mode == "aiExcluded" || (mode == "people" ? $0.kind == "private" : $0.kind != "private")) &&
             (search.isEmpty || $0.name.localizedCaseInsensitiveContains(search)) }
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text(mode == "people" ? "Важный собеседник" : "Исключение для чата").font(.title2.bold())
+                Text(mode == "aiExcluded" ? "Не отправлять в ИИ" : mode == "people" ? "Важный собеседник" : "Исключение для чата").font(.title2.bold())
                 Spacer()
                 Button("Готово") { dismiss() }.keyboardShortcut(.cancelAction)
             }
@@ -390,14 +389,15 @@ struct DialogPicker: View {
                     .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(choices) { dialog in
-                    let added = mode == "people" ? model.config.people.contains { $0.id == dialog.id } : model.config.chats.contains { $0.id == dialog.id }
+                    let added = mode == "aiExcluded" ? model.config.aiExcludedChats.contains { $0.id == dialog.id } : mode == "people" ? model.config.people.contains { $0.id == dialog.id } : model.config.chats.contains { $0.id == dialog.id }
                     HStack {
                         Image(systemName: dialog.kind == "private" ? "person.crop.circle" : dialog.kind == "group" ? "person.3" : "megaphone")
                             .foregroundStyle(accent).frame(width: 28)
                         Text(dialog.name)
                         Spacer()
                         Button(added ? "Добавлен" : "Добавить") {
-                            if mode == "people" { model.config.people.append(Person(id: dialog.id, name: dialog.name)) }
+                            if mode == "aiExcluded" { model.config.aiExcludedChats.append(Person(id: dialog.id, name: dialog.name)) }
+                            else if mode == "people" { model.config.people.append(Person(id: dialog.id, name: dialog.name)) }
                             else { model.config.chats.append(ChatRule(id: dialog.id, name: dialog.name)) }
                             model.saveConfig()
                         }.disabled(added)
@@ -546,7 +546,7 @@ struct ConnectionView: View {
                     Button("Перезапустить модуль") { model.startHelper() }
                 }
             }
-            Text("Соединение идёт напрямую к Telegram. Фильтрация локальная, без внешней нейросети. Приложение не отправляет сообщения и не отмечает их прочитанными.")
+            Text("Соединение идёт напрямую к Telegram. По умолчанию правила локальные. Если включён ИИ-фильтр, подходящий текст отправляется выбранному провайдеру; исключения настраиваются отдельно. Приложение не отправляет сообщения в чаты и не отмечает их прочитанными.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -555,7 +555,7 @@ struct ConnectionView: View {
 struct GuideView: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
-        PageTitle(title: "Первая настройка", subtitle: "Пройди шаги по порядку. Python, терминал и автоматизации в «Командах» не понадобятся.")
+        PageTitle(title: "Первая настройка", subtitle: "Пройди шаги по порядку. Python не нужен. «Команды» и ИИ подключаются по желанию.")
         Panel(title: "1. Установи и открой приложение", icon: "square.and.arrow.down") {
             Text("Открой скачанный DMG, перетащи Telegram Focus в Applications (Программы), извлеки образ диска и запусти приложение из Программ.")
                 .font(.callout).foregroundStyle(.secondary)
@@ -622,6 +622,18 @@ struct GuideView: View {
                 .font(.caption).foregroundStyle(.secondary)
             Text("Ключевые слова проверяются в тексте и подписях к медиа. Голосовые не расшифровываются, звонки и секретные чаты не поддерживаются.")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+        Panel(title: "По желанию: авто-режим через «Команды»", icon: "arrow.triangle.2.circlepath") {
+            ShortcutGuideContent()
+            Text("В «Обзоре» выбери интервал проверки. Изменение замечается при следующем опросе; до него после выхода из Focus возможны дубли с Telegram. При ошибке команды доставка приостанавливается. Главный выключатель останавливает и доставку, и опрос.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        Panel(title: "По желанию: ИИ вместо ключевых слов", icon: "sparkles") {
+            Text("Открой «ИИ-фильтр». Сначала добавь диалоги в «Никогда не отправлять в ИИ». Выбери OpenRouter или DeepSeek, сохрани свой API-ключ, проверь ID модели и тариф. Укажи порог важности и лимит запросов. Затем включи отправку сообщений в ИИ и проверь на тестовом тексте.")
+                .font(.callout).foregroundStyle(.secondary)
+            Text("Сообщения уходят внешнему провайдеру только при включённом ИИ и работающем фильтре. Отправляются первые 4000 символов, без истории и вложений. Исключённые и заглушённые чаты не отправляются. При ошибке или лимите действуют локальные правила. Проверка правил во вкладке «Правила» всегда локальная.")
+                .font(.caption).foregroundStyle(.secondary)
+            Button("К ИИ-фильтру →") { model.selectedPage = "ai" }.buttonStyle(.link)
         }
     }
 }

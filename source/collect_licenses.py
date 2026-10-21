@@ -6,7 +6,7 @@ import sysconfig
 
 destination = Path(sys.argv[1])
 destination.mkdir(parents=True, exist_ok=True)
-for package in ["Telethon", "pyaes", "rsa", "pyasn1", "pyinstaller"]:
+for package in ["Telethon", "pyaes", "rsa", "pyasn1", "pyinstaller", "certifi"]:
     distribution = importlib.metadata.distribution(package)
     target = destination / package
     target.mkdir(exist_ok=True)

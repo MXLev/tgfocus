@@ -10,7 +10,7 @@ Python worker development works on Linux or macOS with Python 3.13:
 
 ```sh
 python3.13 -m venv .venv
-.venv/bin/python -m pip install Telethon==1.45.0
+.venv/bin/python -m pip install Telethon==1.45.0 certifi==2026.10.19
 .venv/bin/python -m unittest discover -s source/tests -p 'test_*.py' -v
 ```
 
@@ -45,7 +45,8 @@ The CI job validates the DMG automatically, but only this test on your Mac valid
 - Try launching the app directly from the read-only DMG: it should explain installation and exit before starting a worker or loading credentials.
 - With an installed copy running, launch a second copy from a different writable folder. It should explain how to quit the first copy and exit without starting another worker.
 - The free ad-hoc build must launch without the restricted time-sensitive entitlement. CI verifies the installed app signature, starts its actual signed executable and worker, and opens/reopens settings on macOS 15 and 26 using the same DMG. This test uses an isolated data directory and does not access credentials or request notification permissions.
-- This release has only manual filtering. New installs start with the master switch off. An old experimental `onlyDuringFocus: true` preference migrates to manual mode with the filter off, retaining rules and credentials. Existing manual preferences keep their enabled state. There must be no automatic-mode control, signing setup, or native Focus Filter instructions in the app.
+- Manual filtering remains the default. Optional Shortcuts automation must accept only explicit ON/OFF, pause on unknown/error/timeout, reset after sleep, and stop polling when the master switch is off. Test Get Current Focus off/on/off and on app restart on a real Mac; CI validates the child process protocol, not Apple's action. Optional AI stays off by default; verify excluded/muted chats never reach the transport, provider failure uses local rules, and rule/pause changes discard in-flight results. Synthetic mocked API tests run without keys. Never use private conversations or real keys in CI.
+- Existing settings migration: New installs start with the master switch off. An old experimental `onlyDuringFocus: true` preference migrates to manual mode with the filter off, retaining rules and credentials. Existing manual preferences keep their enabled state. There must be no native Focus Filter or developer signing setup in the app; Shortcuts is an independent opt-in integration. See AUTOMATION.ru.md and AI.ru.md for user checks.
 - Test the master switch from both settings and the menu: off must stop delivery, both labels must update, and the template menu icon must change between outlined and filled. For Focus use, allow TGFocus in Allowed Apps, mute ordinary Telegram, and turn the filter off manually before leaving Focus to avoid duplicates.
 - Check mention-only and reply-only switches independently, including a reply that also explicitly mentions you. Check inherited chat/category mute settings, a muted forum topic in an unmuted group, an explicitly unmuted topic, and the General topic.
 - While the app is running, a source build must refuse to replace it. Run two source builds concurrently: the second must stop before touching shared output. The runtime lock covers the entire first build through installation. Python tests exercise copy/validation failures, rollback, and lock contention throughout the build.
@@ -63,4 +64,4 @@ For security-sensitive reports, read [SECURITY.md](SECURITY.md). Keep discussion
 
 The installed-app smoke test closes settings, disables the master filter, and keeps the app and worker alive for 25 seconds without a Telegram account. It reports summed resident memory, memory change, and average CPU time for the app process tree after startup warmup as a GitHub Actions notice. This short disconnected sample does not prove the absence of long-term leaks or represent an active Telegram account.
 
-With the master switch off, the worker skips message/entity/mute processing and IPC events. The Telegram connection stays available for fast resumption; its keepalive/reconnect traffic remains. No Focus status polling or App Intents registration runs in this release. Decision history and worker caches are bounded; the IPC decoder drops frames over 1 MiB and recovers at the next newline.
+With the master switch off, the worker skips message/entity/mute processing and IPC events. The Telegram connection stays available for fast resumption; its keepalive/reconnect traffic remains. No App Intents registration runs. Shortcuts polling runs only when explicitly enabled and the master switch is on; it pauses during sleep. AI runs only when explicitly enabled and runtime delivery is active, with two calls maximum and no message queue. Decision history and worker caches are bounded; the IPC decoder drops frames over 1 MiB and recovers at the next newline.
