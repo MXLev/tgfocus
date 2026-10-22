@@ -98,6 +98,12 @@ class ControllerTests(unittest.TestCase):
         self.controller.repair_notifications()
         self.assertEqual(self.controller.config, original)
         self.assertEqual(self.controller.error_text, "Не удалось зарегистрировать TGFocus")
+        self.controller.notifications.repair.return_value = True
+        self.controller.repair_notifications()
+        self.assertEqual(self.controller.error_text, "")
+        self.controller.error_text = "Ошибка соединения Telegram"
+        self.controller.repair_notifications()
+        self.assertEqual(self.controller.error_text, "Ошибка соединения Telegram")
 
     def test_focus_is_checked_again_before_delivering_cached_allowed_message(self):
         self.controller.dnd.read.return_value = (True, "DND on")

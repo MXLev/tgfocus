@@ -261,8 +261,12 @@ class Controller(QObject):
         return self.notifications.status_text if self.notifications else "Проверочный режим: системные уведомления выключены."
 
     def repair_notifications(self):
-        if self.notifications and not self.notifications.repair():
-            self._worker_error(self.notifications.error)
+        if self.notifications:
+            previous_error = self.notifications.error
+            if not self.notifications.repair():
+                self._worker_error(self.notifications.error)
+            elif previous_error and self.error_text == previous_error:
+                self.error_text = ""
         self.changed.emit()
 
     def _notify(self, title, body, *, subtitle="", silent=False, url="", on_activate=None):
