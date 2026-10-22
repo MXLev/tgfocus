@@ -6,6 +6,7 @@ import sys
 import threading
 from collections import deque
 from urllib.parse import urlsplit
+from icons import notification_icon_path
 
 APP_ID = "MXLev.TGFocus.Windows"
 _apartment = threading.local()
@@ -99,7 +100,7 @@ def _register_app_id(*, shortcut_directory=None, app_id=APP_ID):
     with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, path) as key:
         winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "TGFocus")
         winreg.SetValueEx(key, "ShowInSettings", 0, winreg.REG_DWORD, 1)
-        winreg.SetValueEx(key, "IconUri", 0, winreg.REG_SZ, str(executable))
+        winreg.SetValueEx(key, "IconUri", 0, winreg.REG_SZ, str(notification_icon_path() or executable))
     shell = ctypes.WinDLL("shell32", use_last_error=True)
     shell.SetCurrentProcessExplicitAppUserModelID.argtypes = [ctypes.c_wchar_p]
     shell.SetCurrentProcessExplicitAppUserModelID.restype = ctypes.c_long
@@ -113,6 +114,14 @@ def _notification_types():
     from windows_toasts import InteractableWindowsToaster, Toast, ToastAudio
     from winrt.windows.ui.notifications import NotificationSetting
     return InteractableWindowsToaster, Toast, ToastAudio, NotificationSetting
+
+
+def _toast_logo():
+    path = notification_icon_path()
+    if path is None:
+        return None
+    from windows_toasts import ToastDisplayImage, ToastImagePosition
+    return ToastDisplayImage.fromPath(path, altText="TGFocus", position=ToastImagePosition.AppLogo)
 
 
 class NotificationService:
@@ -188,8 +197,10 @@ class NotificationService:
                 fields.append(str(subtitle)[:256])
             fields.append(str(body)[:1000])
             generation = self.generation
+            logo = _toast_logo()
             toast = self._toast_type(text_fields=fields, audio=self._audio_type(silent=bool(silent)),
                 launch_action=url or None,
+                images=[logo] if logo is not None else [],
                 on_activated=(lambda _args: on_activate()) if on_activate and not url else None,
                 on_failed=lambda args: self._toast_failed(generation, args))
             with self._state_lock:

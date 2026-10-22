@@ -16,6 +16,7 @@ from platform_services import APP_ID, NotificationService, _ensure_winrt, _is_un
 from dnd import WnfApi, WnfDndMonitor
 from storage import CredentialVault
 from window import SettingsWindow
+from icons import application_icon, asset_path, verify_executable_icon
 
 
 def tray_icon(enabled):
@@ -60,6 +61,14 @@ def smoke_native(directory):
     construction = run_notification_construction_smoke()
     if not _is_unpackaged():
         raise RuntimeError("Portable EXE did not report unpackaged identity")
+    embedded_icon = False
+    if getattr(sys, "frozen", False):
+        verify_executable_icon(Path(sys.executable))
+        verify_executable_icon(Path(sys.executable).parent / "helper/focus-worker.exe")
+        from PySide6.QtGui import QImage
+        if application_icon().isNull() or QImage(str(asset_path("app.png"))).isNull():
+            raise RuntimeError("Bundled app/notification icon did not load")
+        embedded_icon = True
     vault = CredentialVault(directory / "native-smoke")
     fake = {"apiId": "1", "apiHash": "TEST_HASH", "session": "TEST_SESSION",
             "aiKeys": {"openrouter": "TEST_KEY_NOT_REAL"}}
@@ -97,7 +106,8 @@ def smoke_native(directory):
     notifications = NotificationService(register_identity=False)
     available = notifications.available
     notifications.close()  # No actual notifications or account/network requests.
-    return {"platform": "Windows", "dpapi": "OK", "focus": active, **construction,
+    return {"platform": "Windows", "dpapi": "OK", "focus": active,
+            "embedded_icon": embedded_icon, **construction,
             "focus_status": focus_status, "wnf_subscribed": subscribed, "shortcut_identity": "OK",
             "native_notifications_available": available}
 
@@ -124,7 +134,7 @@ def main():
     application.setApplicationName("TGFocus")
     application.setOrganizationName("MXLev")
     application.setQuitOnLastWindowClosed(False)
-    application.setWindowIcon(tray_icon(False))
+    application.setWindowIcon(application_icon())
     directory = data_directory()
     directory.mkdir(parents=True, exist_ok=True)
     lock = QLockFile(str(directory / "runtime.lock"))

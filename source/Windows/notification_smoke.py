@@ -17,7 +17,7 @@ def run_notification_construction_smoke():
     if sys.platform != "win32":
         raise RuntimeError("Native notification construction smoke requires Windows")
 
-    from platform_services import _ensure_winrt
+    from platform_services import _ensure_winrt, _toast_logo
     _ensure_winrt()
     from windows_toasts import InteractableWindowsToaster, Toast, ToastAudio
     from winrt.windows.ui.notifications import ToastNotification
@@ -56,8 +56,11 @@ def run_notification_construction_smoke():
                    audio=ToastAudio(silent=True), on_activated=lambda _args: callback_hits.append("ai"))
     telegram = Toast(text_fields=["Telegram", "Ссылка & уведомление"],
                      audio=ToastAudio(silent=False), launch_action=protocol)
+    logo = _toast_logo()
+    _check(logo is not None, "bundled notification icon is missing")
 
     for toast in (normal, silent, telegram):
+        toast.AddImage(logo)
         before = len(capture.notifications)
         toaster.show_toast(toast)
         _check(len(capture.notifications) == before + 1, "show_toast did not reach capture exactly once")
@@ -73,6 +76,8 @@ def run_notification_construction_smoke():
         _check(native.data.sequence_number == toast.updates and toast.updates > 0, "adaptive data sequence missing")
         _check(native.tag == toast.tag and native.group == (toast.group or toast.tag), "native identity changed")
         _check(not native.suppress_popup, "smoke toast unexpectedly suppresses popup")
+        logos = [node for node in binding.findall("image") if node.get("placement") == "appLogoOverride"]
+        _check(len(logos) == 1 and logos[0].get("src") == logo.image.path, "application logo/URI changed")
 
         audio = document.find("audio")
         _check(audio is not None, "audio configuration was lost")

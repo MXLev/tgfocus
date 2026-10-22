@@ -45,6 +45,10 @@ def main():
             raise RuntimeError("Real WinRT notification XML/data/audio/callback construction was not checked")
         print("::notice title=Windows notification construction smoke::"
               "Real WinRT XML/data/events/audio/protocol construction passed for 3 toasts; native Show intercepted.")
+        if checks.get("embedded_icon") is not True:
+            raise RuntimeError("Final EXE/worker icon resources were not verified")
+        print("::notice title=Windows app icon smoke::"
+              "Both EXEs contain the expected 9 icon resolutions; Qt icon, PNG and toast logo loaded.")
         print("Windows frozen app: worker ready, settings reopen, isolated native integration smoke OK")
 
 
