@@ -743,6 +743,7 @@ final class AppModel: ObservableObject {
 
     func logout() {
         guard helperReady else { return }
+        setFilterEnabled(false)
         busy = true
         send(["command": "logout"])
     }

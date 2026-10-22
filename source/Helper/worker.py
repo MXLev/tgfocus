@@ -76,7 +76,8 @@ class Worker:
             return
         self.client = TelegramClient(
             StringSession(request.get("session", "")), api_id, api_hash,
-            device_model="Telegram Focus for Mac", system_version="macOS",
+            device_model="TGFocus for Windows" if sys.platform == "win32" else "Telegram Focus for Mac",
+            system_version="Windows" if sys.platform == "win32" else "macOS",
             app_version="1.5.0", connection_retries=3, request_retries=2,
             retry_delay=2, timeout=10, flood_sleep_threshold=0,
         )
@@ -411,9 +412,10 @@ class Worker:
                 result = decide(data["message"], self.config)
                 emit("simulation", allowed=result.allowed, reason=result.reason)
             elif action == "logout":
-                if self.client:
-                    await self.client.log_out()
-                    await self.close_client()
+                if not self.client or await self.client.log_out() is not True:
+                    emit("error", message="Не удалось отозвать сессию в Telegram. Данные входа сохранены; проверь соединение и повтори выход или заверши сеанс в Telegram → Устройства.", recoverable=True)
+                    return True
+                await self.close_client()
                 emit("loggedOut")
             elif action == "disconnect":
                 await self.close_client()
@@ -447,22 +449,57 @@ class Worker:
 
     async def run(self):
         emit("ready")
+        commands = asyncio.Queue(maxsize=16)
+
+        async def execute_commands():
+            while True:
+                request = await commands.get()
+                try:
+                    await self.command(request)
+                finally:
+                    commands.task_done()
+
+        command_task = asyncio.create_task(execute_commands())
+        discarding = False
         try:
             while True:
-                line = await asyncio.to_thread(sys.stdin.readline)
+                line = await asyncio.to_thread(sys.stdin.readline, 1_048_577)
                 if not line:
                     break
+                if len(line) > 1_048_576 or discarding:
+                    discarding = not line.endswith("\n")
+                    continue
                 try:
                     data = json.loads(line)
                 except (ValueError, TypeError):
                     continue
-                if not await self.command(data):
+                if not isinstance(data, dict):
+                    continue
+                action = data.get("command")
+                if action == "quit":
                     break
+                if action == "config":
+                    # Privacy/pause updates must not wait behind Telegram network
+                    # calls such as iter_dialogs/connect/auth. Only config runs
+                    # concurrently; account mutations remain sequential and bounded.
+                    await self.command(data)
+                else:
+                    try:
+                        commands.put_nowait(data)
+                    except asyncio.QueueFull:
+                        emit("error", message="Слишком много команд. Дождись завершения текущей операции.", recoverable=True)
         finally:
+            command_task.cancel()
+            await asyncio.gather(command_task, return_exceptions=True)
             await self.close_client()
 
 
 if __name__ == "__main__":
+    # Frozen console workers inherit Windows' code page unless explicitly set.
+    # The JSON-lines protocol is UTF-8 on every platform, including redirected pipes.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="strict")
     if sys.argv[1:] == ["--check-ai-tls"]:
         import ssl
         import certifi

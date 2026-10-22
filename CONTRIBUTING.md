@@ -14,6 +14,8 @@ python3.13 -m venv .venv
 .venv/bin/python -m unittest discover -s source/tests -p 'test_*.py' -v
 ```
 
+The experimental Windows tray client lives in `source/Windows`; see [WINDOWS.ru.md](WINDOWS.ru.md). On Windows x64 with Python 3.13 run `py -3.13 source/Windows/build.py` to build/test a self-contained portable ZIP. Qt-specific tests skip if PySide6 is absent from Linux/macOS environments. The Windows workflow tests real DPAPI and frozen imports/GUI/worker on the hosted Windows image; visible Windows 11 notifications and Focus Sessions require a desktop check. Never use real keys or accounts in CI. The Windows PR currently depends on the common worker/AI changes in PR #6.
+
 Building the native app requires an Apple Silicon Mac, macOS 14+, Python 3.13, and Xcode Command Line Tools. To package a DMG, also install [Homebrew](https://brew.sh/) and GNU coreutils. These are build tools, not requirements for users installing the DMG:
 
 ```sh
