@@ -47,6 +47,14 @@ try {
         $report.status = 'scanner_unavailable'
         throw 'Defender is not enabled on this runner; no clean scan is claimed'
     }
+    # Hosted images may have older definitions. Use the normal Defender update
+    # mechanism; failure must not be presented as a current-signature scan.
+    $report.signatureUpdate = 'incomplete'
+    Update-MpSignature -ErrorAction Stop
+    $report.signatureUpdate = 'successful'
+    $defender = Get-MpComputerStatus
+    $report.defender = $defender | Select-Object AMServiceEnabled, AntivirusEnabled, AMRunningMode,
+        AMEngineVersion, AMProductVersion, AntivirusSignatureVersion, AntivirusSignatureLastUpdated
     $platform = Join-Path $env:ProgramData 'Microsoft\Windows Defender\Platform'
     $scanner = Get-ChildItem -Path (Join-Path $platform '*/MpCmdRun.exe') -File -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
