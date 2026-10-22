@@ -105,6 +105,31 @@ class ControllerTests(unittest.TestCase):
         self.controller.repair_notifications()
         self.assertEqual(self.controller.error_text, "Ошибка соединения Telegram")
 
+    def test_test_notification_preserves_safe_native_error_and_clears_it_after_success(self):
+        self.controller.notifications.show.return_value = False
+        self.controller.notifications.error = "Не удалось прочитать разрешения (код Windows 0x80070005)."
+        self.controller.test_notification()
+        self.assertEqual(self.controller.error_text, self.controller.notifications.error)
+        self.controller.notifications.show.return_value = True
+        self.controller.test_notification()
+        self.assertEqual(self.controller.error_text, "")
+
+    def test_native_notification_failures_are_queued_and_old_generation_is_ignored(self):
+        self.controller.notifications.generation = 3
+        self.controller._notification_error.emit(2, "Old failure")
+        self.application.processEvents()
+        self.assertEqual(self.controller.error_text, "")
+        thread = threading.Thread(target=lambda: self.controller._notification_error.emit(3, "Failure 0x80070005"))
+        thread.start()
+        thread.join(timeout=2)
+        self.assertEqual(self.controller.error_text, "")
+        self.application.processEvents()
+        self.assertEqual(self.controller.error_text, "Failure 0x80070005")
+        self.controller.shutdown()
+        self.controller._notification_error.emit(3, "Late failure")
+        self.application.processEvents()
+        self.assertEqual(self.controller.error_text, "Failure 0x80070005")
+
     def test_focus_is_checked_again_before_delivering_cached_allowed_message(self):
         self.controller.dnd.read.return_value = (True, "DND on")
         self.controller.update_config({"enabled": True, "windowsFocusAutomation": True})

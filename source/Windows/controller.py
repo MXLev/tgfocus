@@ -31,6 +31,7 @@ class Controller(QObject):
     simulation_received = Signal(bool, str)
     settings_requested = Signal(str)
     _dnd_dirty = Signal()
+    _notification_error = Signal(int, str)
 
     def __init__(self, directory, *, smoke=False, parent=None):
         super().__init__(parent)
@@ -55,6 +56,9 @@ class Controller(QObject):
         self._closing = False
         self._ai_failure = AIFailureGate()
         self.notifications = None if smoke else NotificationService()
+        self._notification_error.connect(self._notification_failed, Qt.ConnectionType.QueuedConnection)
+        if self.notifications:
+            self.notifications.on_failure = self._notification_error.emit
         if not smoke:
             try:
                 self.config = self.config_store.load()
@@ -253,8 +257,18 @@ class Controller(QObject):
         self.bridge.send({"command": "logout"})
 
     def test_notification(self):
+        previous_error = self.notifications.error if self.notifications else ""
         if not self._notify("TGFocus", "Проверка доставки. Во время «Не беспокоить» разреши TGFocus в приоритетных уведомлениях Windows."):
-            self._worker_error("Windows не приняла уведомление. Проверь настройки уведомлений TGFocus.")
+            self._worker_error(self.notifications.error if self.notifications else "Системные уведомления недоступны.")
+        else:
+            if previous_error and self.error_text == previous_error:
+                self.error_text = ""
+            self.changed.emit()
+
+    @Slot(int, str)
+    def _notification_failed(self, generation, message):
+        if not self._closing and self.notifications and generation == self.notifications.generation:
+            self._worker_error(message)
 
     @property
     def notification_status(self):
@@ -346,7 +360,7 @@ class Controller(QObject):
             if not self._notify(event.get("title", "Telegram"), body,
                 subtitle=event.get("sender", "") if event.get("kind") != "private" else "",
                 silent=not self.config.get("playSound"), url=event.get("url", "tg://")):
-                self.error_text = "Windows не приняла уведомление. Проверь настройки уведомлений TGFocus."
+                self.error_text = self.notifications.error if self.notifications else "Системные уведомления недоступны."
 
     def shutdown(self):
         if self._closing:

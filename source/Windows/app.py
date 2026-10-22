@@ -12,7 +12,7 @@ from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPainterPath, QPixma
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 from controller import Controller
-from platform_services import APP_ID, NotificationService, _ensure_winrt, _launcher, _register_app_id
+from platform_services import APP_ID, NotificationService, _ensure_winrt, _is_unpackaged, _launcher, _register_app_id
 from dnd import WnfApi, WnfDndMonitor
 from storage import CredentialVault
 from window import SettingsWindow
@@ -56,6 +56,10 @@ def smoke_native(directory):
     import winrt.windows.ui.notifications
     import windows_toasts
     _ensure_winrt()  # Core runtime initialization must work even on a CI server.
+    from notification_smoke import run_notification_construction_smoke
+    construction = run_notification_construction_smoke()
+    if not _is_unpackaged():
+        raise RuntimeError("Portable EXE did not report unpackaged identity")
     vault = CredentialVault(directory / "native-smoke")
     fake = {"apiId": "1", "apiHash": "TEST_HASH", "session": "TEST_SESSION",
             "aiKeys": {"openrouter": "TEST_KEY_NOT_REAL"}}
@@ -93,7 +97,7 @@ def smoke_native(directory):
     notifications = NotificationService(register_identity=False)
     available = notifications.available
     notifications.close()  # No actual notifications or account/network requests.
-    return {"platform": "Windows", "dpapi": "OK", "focus": active,
+    return {"platform": "Windows", "dpapi": "OK", "focus": active, **construction,
             "focus_status": focus_status, "wnf_subscribed": subscribed, "shortcut_identity": "OK",
             "native_notifications_available": available}
 

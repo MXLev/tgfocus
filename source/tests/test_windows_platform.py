@@ -168,13 +168,69 @@ class NotificationTests(unittest.TestCase):
     def test_status_reports_permissions_and_registration_can_be_repaired(self):
         self.assertIn("Windows разрешает", self.service.status_text)
         self.toaster.toastNotifier.setting = 1
-        self.assertIn("запрещены", self.service.status_text)
+        self.assertIn("выключены", self.service.status_text)
         with patch.object(platform_services.sys, "platform", "win32"), \
                 patch("platform_services._register_app_id", side_effect=OSError("PRIVATE PATH")):
             self.assertFalse(self.service.repair())
         self.assertFalse(self.service.available)
         self.assertNotIn("PRIVATE", self.service.status_text)
         self.assertIn("зарегистрировать", self.service.status_text)
+
+    def _fail_permission_query(self, code):
+        error = OSError("PRIVATE TEXT THAT MUST NOT REACH UI")
+        error.winerror = code
+
+        class UninitializedNotifier:
+            @property
+            def setting(self):
+                raise error
+
+        self.toaster.toastNotifier = UninitializedNotifier()
+
+    def test_unpackaged_missing_profile_attempts_first_show_and_surfaces_submit_failure(self):
+        self._fail_permission_query(0x80070490)
+        with patch("platform_services._is_unpackaged", return_value=True):
+            self.assertIn("ещё не создала", self.service.status_text)
+            self.assertTrue(self.service.show("title", "body"))
+            self.toaster.show_toast.assert_called_once()
+            denied = OSError("PRIVATE BODY")
+            denied.winerror = 0x80070005
+            self.toaster.show_toast.side_effect = denied
+            self.assertFalse(self.service.show("title", "body"))
+        self.assertIn("0x80070005", self.service.error)
+        self.assertNotIn("PRIVATE", self.service.error)
+        self.assertNotIn("0x80070490", self.service.error)
+
+    def test_no_first_show_fallback_for_packaged_senders_other_errors_or_explicit_denials(self):
+        for code, unpackaged in [(0x80070490, False), (0x80070005, True), (0x80004005, True)]:
+            with self.subTest(code=code, unpackaged=unpackaged):
+                self._fail_permission_query(code)
+                with patch("platform_services._is_unpackaged", return_value=unpackaged):
+                    self.assertFalse(self.service.show("title", "body"))
+                self.assertIn(f"0x{code:08X}", self.service.error)
+                self.assertNotIn("PRIVATE", self.service.status_text)
+        for value in (1, 2, 3, 4, 999):
+            self.toaster.toastNotifier = SimpleNamespace(setting=value)
+            self.assertFalse(self.service.show("title", "body"))
+        self.toaster.show_toast.assert_not_called()
+
+    def test_async_native_failure_reports_only_code_and_ignores_released_toasts(self):
+        callback = Mock()
+        self.service.on_failure = callback
+        self.assertTrue(self.service.show("private title", "private body"))
+        toast = self.toaster.show_toast.call_args.args[0]
+        toast.on_failed(SimpleNamespace(error_code=-2147024809))
+        callback.assert_called_once_with(self.service.generation,
+            "Windows отклонила уведомление после отправки (код Windows 0x80070057).")
+        self.assertNotIn("private", self.service.error)
+        self.service.close()
+        toast.on_failed(SimpleNamespace(error_code=0x80070005))
+        callback.assert_called_once()
+
+    def test_native_failure_inside_show_is_not_overwritten_with_success(self):
+        self.toaster.show_toast.side_effect = lambda toast: toast.on_failed(SimpleNamespace(error_code=0x80070057))
+        self.assertFalse(self.service.show("title", "body"))
+        self.assertIn("0x80070057", self.service.error)
 
     def test_identity_failure_does_not_create_notifier_with_unknown_aumid(self):
         with patch.object(platform_services.sys, "platform", "win32"), \
@@ -194,6 +250,17 @@ class NotificationTests(unittest.TestCase):
 
 
 class RegistrationTests(unittest.TestCase):
+    def test_package_detection_only_accepts_native_no_package_status(self):
+        query = Mock()
+        with patch.object(platform_services.ctypes, "WinDLL",
+                          return_value=SimpleNamespace(GetCurrentPackageFullName=query), create=True):
+            for code, expected in [(15700, True), (122, False), (5, False), (0, False)]:
+                query.return_value = code
+                self.assertIs(platform_services._is_unpackaged(), expected)
+            self.assertEqual(ctypes.sizeof(query.restype), 4)
+            query.side_effect = OSError()
+            self.assertFalse(platform_services._is_unpackaged())
+
     def test_shortcut_and_notifier_share_identity_and_matching_shortcut_is_reused(self):
         with tempfile.TemporaryDirectory() as temporary:
             executable = Path(temporary) / "Кириллица и пробелы" / "TGFocus.exe"
