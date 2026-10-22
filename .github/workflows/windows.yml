@@ -5,6 +5,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      scan_run_id:
+        description: 'Scan an existing Windows artifact from this workflow run (empty = build)'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -15,6 +20,7 @@ concurrency:
 
 jobs:
   windows-tray:
+    if: ${{ !inputs.scan_run_id }}
     name: Windows x64 portable app
     runs-on: windows-latest
     timeout-minutes: 30
@@ -35,3 +41,32 @@ jobs:
             dist/TGFocus-Windows-x64.zip
             dist/TGFocus-Windows-x64.zip.sha256
           if-no-files-found: error
+
+  scan-existing:
+    name: Defender check of existing Windows artifact
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_run_id != '' }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: TGFocus-Windows-test-x64
+          path: security-input
+          run-id: ${{ inputs.scan_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify archive and scan without remediation
+        shell: pwsh
+        env:
+          TGFOCUS_SOURCE_RUN: ${{ inputs.scan_run_id }}
+        run: ./.github/scripts/scan-windows-package.ps1 -ArtifactDirectory security-input -ReportDirectory security-report
+      - name: Keep scan evidence even if the scan fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TGFocus-Windows-security-report
+          path: security-report
+          if-no-files-found: warn
