@@ -2,6 +2,7 @@ import ctypes
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -231,6 +232,30 @@ class NotificationTests(unittest.TestCase):
         self.toaster.show_toast.side_effect = lambda toast: toast.on_failed(SimpleNamespace(error_code=0x80070057))
         self.assertFalse(self.service.show("title", "body"))
         self.assertIn("0x80070057", self.service.error)
+
+    def test_native_failure_getter_cannot_overwrite_state_after_close(self):
+        started, finish = threading.Event(), threading.Event()
+
+        class DelayedFailure:
+            @property
+            def error_code(self):
+                started.set()
+                finish.wait(2)
+                return 0x80070057
+
+        self.service.on_failure = Mock()
+        self.service.show("title", "body")
+        toast = self.toaster.show_toast.call_args.args[0]
+        thread = threading.Thread(target=lambda: toast.on_failed(DelayedFailure()))
+        thread.start()
+        self.assertTrue(started.wait(2))
+        self.service.close()
+        self.service.error = "New state"
+        finish.set()
+        thread.join(timeout=2)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(self.service.error, "New state")
+        self.service.on_failure.assert_not_called()
 
     def test_identity_failure_does_not_create_notifier_with_unknown_aumid(self):
         with patch.object(platform_services.sys, "platform", "win32"), \

@@ -122,6 +122,7 @@ class NotificationService:
         self._toaster = None
         self._retained = deque(maxlen=64)
         self._register_identity = register_identity
+        self._state_lock = threading.Lock()
         self.generation = 0
         self.on_failure = None
         if sys.platform != "win32":
@@ -143,8 +144,9 @@ class NotificationService:
         try:
             toaster_type, self._toast_type, self._audio_type, self._settings_type = _notification_types()
             self._toaster = toaster_type("TGFocus", notifierAUMID=APP_ID)
-            self.available = True
-            self.error = ""
+            with self._state_lock:
+                self.available = True
+                self.error = ""
             return True
         except Exception as error:
             self.error = _safe_error("Не удалось подготовить уведомления Windows", error)
@@ -190,29 +192,39 @@ class NotificationService:
                 launch_action=url or None,
                 on_activated=(lambda _args: on_activate()) if on_activate and not url else None,
                 on_failed=lambda args: self._toast_failed(generation, args))
-            self.error = ""
+            with self._state_lock:
+                self.error = ""
             self._toaster.show_toast(toast)
             self._retained.append(toast)
             # Accepted by Windows; Focus/notification settings still determine banners.
-            return not bool(self.error)  # Preserve a Failed event raised inside Show.
+            with self._state_lock:
+                return not bool(self.error)  # Preserve a Failed event raised inside Show.
         except Exception as error:
             self.error = _safe_error("Не удалось сформировать или отправить уведомление TGFocus", error)
             return False
 
     def _toast_failed(self, generation, args):
-        if generation != self.generation or not self.available:
-            return
+        with self._state_lock:
+            if generation != self.generation or not self.available:
+                return
         try:
             code = args.error_code
             error = OSError()
             if isinstance(code, int) and not isinstance(code, bool):
                 error.winerror = code
-            self.error = _safe_error("Windows отклонила уведомление после отправки", error)
+            message = _safe_error("Windows отклонила уведомление после отправки", error)
         except Exception as error:
-            self.error = _safe_error("Не удалось прочитать причину отказа уведомления", error)
-        if self.on_failure:
+            message = _safe_error("Не удалось прочитать причину отказа уведомления", error)
+        # Reading native event arguments may release the GIL. Repair can finish
+        # during that getter, so revalidate before publishing shared error state.
+        with self._state_lock:
+            if generation != self.generation or not self.available:
+                return
+            self.error = message
+            callback = self.on_failure
+        if callback:
             try:
-                self.on_failure(generation, self.error)
+                callback(generation, message)
             except Exception:
                 pass  # The GUI may already be going away; never escape a native callback.
 
@@ -225,7 +237,8 @@ class NotificationService:
         self._retained.clear()
 
     def close(self):
-        self.generation += 1
+        with self._state_lock:
+            self.generation += 1
+            self.available = False
         self._retained.clear()
         self._toaster = None
-        self.available = False
