@@ -199,7 +199,25 @@ class SettingsWindow(QMainWindow):
         auto.addWidget(paragraph("Если обычный Telegram тоже показывает уведомления, возможны дубли. "
             "Разреши TGFocus в приоритетных уведомлениях Windows, оставив обычный Telegram заглушённым "
             "во время «Не беспокоить». В ручном режиме выключай TGFocus при выходе из этого режима."))
+        notifications = self._group("Уведомления Windows", layout)
+        self.notification_status = paragraph("")
+        notifications.addWidget(self.notification_status)
+        settings = QPushButton("Открыть параметры уведомлений Windows")
+        settings.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("ms-settings:notifications")))
+        notifications.addWidget(settings)
+        repair = QPushButton("Восстановить регистрацию TGFocus")
+        repair.clicked.connect(self.controller.repair_notifications)
+        notifications.addWidget(repair)
+        test = QPushButton("Тестовое уведомление Windows")
+        test.clicked.connect(self.controller.test_notification)
+        notifications.addWidget(test)
+        notifications.addWidget(paragraph("При запуске создаётся ярлык TGFocus в меню «Пуск» — без автозапуска. "
+            "Выключи «Не беспокоить» и отправь тест. Затем заново открой параметры Windows, "
+            "найди TGFocus и разреши баннеры. В «Задать приоритетные уведомления» → «Добавить приложения» "
+            "добавь TGFocus; обычный Telegram туда не добавляй. После этого включи «Не беспокоить» и повтори тест."))
         history = self._group("Последние решения — без текста переписки", layout)
+        history.addWidget(paragraph("Это журнал проверки сообщений, а не список уведомлений Windows. "
+            "Отклонённые сообщения не показываются баннером и не отправляются в ИИ, если чат заглушён в Telegram."))
         self.counters = paragraph("")
         history.addWidget(self.counters)
         self.activities = QListWidget()
@@ -294,6 +312,8 @@ class SettingsWindow(QMainWindow):
         self.all_private = self._toggle("Пропускать все личные сообщения", "allPrivate", layout)
         self.allow_mentions = self._toggle("Уведомлять об упоминаниях меня в группах", "allowMentions", layout)
         self.allow_replies = self._toggle("Уведомлять об ответах на мои сообщения", "allowReplies", layout)
+        layout.addWidget(paragraph("Всегда включено: чаты и темы без уведомлений в самом Telegram не пропускаются. "
+            "Это правило выше важных людей, упоминаний, исключений и ИИ; отдельного переключателя нет."))
         self.preview = self._toggle("Показывать текст в уведомлении", "showPreview", layout)
         self.sound = self._toggle("Звук обычных уведомлений", "playSound", layout)
         keywords = self._group("Ключевые слова — резерв при сбое ИИ", layout)
@@ -437,9 +457,13 @@ class SettingsWindow(QMainWindow):
              "и ответы включаются отдельно. Mute чата или темы Telegram имеет приоритет над исключениями. "
              "Кнопка проверки правил не вызывает ИИ и не проверяет системные разрешения Windows."),
             ("4. Разреши уведомления Windows", "Открой Параметры Windows → Система → Уведомления. "
-             "Разреши уведомления TGFocus. При использовании «Не беспокоить» настрой разрешение/приоритет "
-             "для TGFocus и проверь настоящие баннеры. Обычный Telegram должен оставаться заглушённым в это время, "
-             "иначе возможны дубли. Отдельные уведомления Telegram не перехватываются и не отменяются."),
+             "TGFocus создаёт свой ярлык в меню «Пуск» при запуске. Выключи «Не беспокоить» и в «Обзоре» "
+             "нажми «Тестовое уведомление Windows». Заново открой параметры Windows, найди TGFocus "
+             "и включи уведомления и баннеры. Затем «Задать приоритетные уведомления» → "
+             "«Добавить приложения» → TGFocus. Обычный Telegram не добавляй. Включи «Не беспокоить» "
+             "и повтори тест. Если TGFocus нет в списке, нажми «Восстановить регистрацию TGFocus» в «Обзоре» "
+             "и заново открой параметры Windows. Администратор не нужен. Отдельные уведомления Telegram "
+             "не перехватываются и не отменяются."),
             ("5. Выбери управление", "По умолчанию включай и выключай фильтр в трее или «Обзоре» вручную. "
              "Для автоматизации включи в «Обзоре» переключатель «По режиму «Не беспокоить» Windows (WNF)» "
              "и разреши главный фильтр. Приложение читает состояние при включении автоматики и перед "
@@ -580,7 +604,8 @@ class SettingsWindow(QMainWindow):
         self.filter_status.setText(controller.filter_title)
         self.connection_status.setText(controller.status_text + (" · " + controller.account_name if controller.account_name else ""))
         self.focus_status.setText(controller.focus_status)
-        self.counters.setText(f"Пропущено: {controller.passed} · Заглушено: {controller.suppressed}")
+        self.notification_status.setText(controller.notification_status)
+        self.counters.setText(f"Разрешено правилами: {controller.passed} · Отклонено: {controller.suppressed}")
         self.ai_status.setText(controller.ai_status)
         self.ai_key_status.setText("Ключ выбранного провайдера сохранён" if controller.has_ai_key() else "Ключ не задан")
         self.ai_test.setEnabled(bool(controller.config.get("aiEnabled")) and controller.has_ai_key())

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Windows"))
 import platform_services
@@ -165,6 +165,25 @@ class NotificationTests(unittest.TestCase):
         self.assertFalse(self.service.show("t", "b"))
         self.assertNotIn("PRIVATE MESSAGE", self.service.error)
 
+    def test_status_reports_permissions_and_registration_can_be_repaired(self):
+        self.assertIn("Windows разрешает", self.service.status_text)
+        self.toaster.toastNotifier.setting = 1
+        self.assertIn("запрещены", self.service.status_text)
+        with patch.object(platform_services.sys, "platform", "win32"), \
+                patch("platform_services._register_app_id", side_effect=OSError("PRIVATE PATH")):
+            self.assertFalse(self.service.repair())
+        self.assertFalse(self.service.available)
+        self.assertNotIn("PRIVATE", self.service.status_text)
+        self.assertIn("зарегистрировать", self.service.status_text)
+
+    def test_identity_failure_does_not_create_notifier_with_unknown_aumid(self):
+        with patch.object(platform_services.sys, "platform", "win32"), \
+                patch("platform_services._register_app_id", side_effect=OSError()), \
+                patch("platform_services._notification_types") as factory:
+            service = platform_services.NotificationService()
+        factory.assert_not_called()
+        self.assertFalse(service.show("title", "body"))
+
     def test_retained_callbacks_are_bounded(self):
         for _ in range(100):
             self.assertTrue(self.service.show("title", "message"))
@@ -172,6 +191,30 @@ class NotificationTests(unittest.TestCase):
         self.service.close()
         self.assertFalse(self.service.available)
         self.assertEqual(len(self.service._retained), 0)
+
+
+class RegistrationTests(unittest.TestCase):
+    def test_shortcut_and_notifier_share_identity_and_matching_shortcut_is_reused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "Кириллица и пробелы" / "TGFocus.exe"
+            expected = dict(executable=str(executable), arguments="", app_id=platform_services.APP_ID)
+            shortcut = Path(temporary) / "TGFocus.lnk"
+            registry = SimpleNamespace(HKEY_CURRENT_USER=0, REG_SZ=1, REG_DWORD=4,
+                CreateKeyEx=MagicMock(), SetValueEx=Mock())
+            identity = SimpleNamespace(get_programs_directory=Mock(return_value=Path(temporary)),
+                read_shortcut=Mock(side_effect=[FileNotFoundError(), expected]), create_shortcut=Mock())
+            shell = SimpleNamespace(SetCurrentProcessExplicitAppUserModelID=Mock(return_value=0))
+            with patch.dict(sys.modules, {"winreg": registry, "shell_identity": identity}), \
+                    patch("platform_services._launcher", return_value=(executable, "")), \
+                    patch.object(platform_services.ctypes, "WinDLL", return_value=shell, create=True):
+                self.assertEqual(platform_services._register_app_id(), shortcut)
+                identity.create_shortcut.assert_called_once_with(shortcut, executable, arguments="",
+                    app_id=platform_services.APP_ID, icon=executable)
+                shell.SetCurrentProcessExplicitAppUserModelID.assert_called_with(platform_services.APP_ID)
+                identity.create_shortcut.reset_mock()
+                identity.read_shortcut.side_effect = [expected, expected]
+                platform_services._register_app_id()
+                identity.create_shortcut.assert_not_called()
 
 
 if __name__ == "__main__": unittest.main()

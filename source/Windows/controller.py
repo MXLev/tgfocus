@@ -256,6 +256,15 @@ class Controller(QObject):
         if not self._notify("TGFocus", "Проверка доставки. Во время «Не беспокоить» разреши TGFocus в приоритетных уведомлениях Windows."):
             self._worker_error("Windows не приняла уведомление. Проверь настройки уведомлений TGFocus.")
 
+    @property
+    def notification_status(self):
+        return self.notifications.status_text if self.notifications else "Проверочный режим: системные уведомления выключены."
+
+    def repair_notifications(self):
+        if self.notifications and not self.notifications.repair():
+            self._worker_error(self.notifications.error)
+        self.changed.emit()
+
     def _notify(self, title, body, *, subtitle="", silent=False, url="", on_activate=None):
         return self.notifications is not None and self.notifications.show(title, body, subtitle=subtitle,
             silent=silent, url=url, on_activate=on_activate)

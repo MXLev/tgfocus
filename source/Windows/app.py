@@ -12,7 +12,7 @@ from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPainterPath, QPixma
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 from controller import Controller
-from platform_services import NotificationService, _ensure_winrt
+from platform_services import APP_ID, NotificationService, _ensure_winrt, _launcher, _register_app_id
 from dnd import WnfApi, WnfDndMonitor
 from storage import CredentialVault
 from window import SettingsWindow
@@ -65,6 +65,22 @@ def smoke_native(directory):
     ciphertext = vault.path.read_bytes()
     if b"TEST_SESSION" in ciphertext or b"TEST_KEY_NOT_REAL" in ciphertext:
         raise RuntimeError("Plaintext credentials in DPAPI vault")
+    import winreg
+    from shell_identity import get_programs_directory, read_shortcut
+    programs = get_programs_directory()
+    if not programs.is_absolute():
+        raise RuntimeError("Current-user Programs directory is not absolute")
+    smoke_id = APP_ID + ".Smoke"
+    try:
+        shortcut = _register_app_id(shortcut_directory=directory / "identity-smoke", app_id=smoke_id)
+        executable, arguments = _launcher()
+        if read_shortcut(shortcut) != dict(executable=str(executable), arguments=arguments, app_id=smoke_id):
+            raise RuntimeError("Native shortcut identity round trip failed")
+    finally:
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, "Software\\Classes\\AppUserModelId\\" + smoke_id)
+        except FileNotFoundError:
+            pass
     WnfApi()  # Frozen ctypes exports must bind even if Server has no DND shell.
     observer = WnfDndMonitor(lambda: None)
     try:
@@ -73,11 +89,12 @@ def smoke_native(directory):
     finally:
         if not observer.close():
             raise RuntimeError("WNF subscription cleanup failed")
-    notifications = NotificationService()
+    # No real Start Menu shortcut or production AUMID is installed by smoke.
+    notifications = NotificationService(register_identity=False)
     available = notifications.available
     notifications.close()  # No actual notifications or account/network requests.
     return {"platform": "Windows", "dpapi": "OK", "focus": active,
-            "focus_status": focus_status, "wnf_subscribed": subscribed,
+            "focus_status": focus_status, "wnf_subscribed": subscribed, "shortcut_identity": "OK",
             "native_notifications_available": available}
 
 

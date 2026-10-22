@@ -48,7 +48,8 @@ class ControllerTests(unittest.TestCase):
         for target, value in [("controller.WorkerBridge", FakeBridge),
                               ("controller.WnfDndMonitor", Mock(return_value=Mock(start=Mock(return_value=True),
                                   read=Mock(return_value=(None, "Unknown")), close=Mock(return_value=True)))),
-                              ("controller.NotificationService", Mock(return_value=Mock(show=Mock(return_value=True)))),
+                              ("controller.NotificationService", Mock(return_value=Mock(show=Mock(return_value=True),
+                                  status_text="Уведомления разрешены", repair=Mock(return_value=True)))),
                               ("controller.CredentialVault", Mock(return_value=Mock(load=Mock(return_value={}), save=Mock())))]:
             patcher = patch(target, value)
             patcher.start()
@@ -89,6 +90,14 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.controller._secrets, {})
         self.controller.connect_telegram("1" * 5000, "a" * 32)
         self.assertEqual(len(self.controller.bridge.commands), 1)
+
+    def test_registration_repair_reports_failure_without_changing_filter_or_ai_settings(self):
+        original = copy.deepcopy(self.controller.config)
+        self.controller.notifications.repair.return_value = False
+        self.controller.notifications.error = "Не удалось зарегистрировать TGFocus"
+        self.controller.repair_notifications()
+        self.assertEqual(self.controller.config, original)
+        self.assertEqual(self.controller.error_text, "Не удалось зарегистрировать TGFocus")
 
     def test_focus_is_checked_again_before_delivering_cached_allowed_message(self):
         self.controller.dnd.read.return_value = (True, "DND on")

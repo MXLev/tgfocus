@@ -36,6 +36,11 @@ def main():
         print("::notice title=Windows WNF startup smoke::"
               f"Subscription={checks.get('wnf_subscribed')}; DND={checks.get('focus')}. "
               "Read-only native startup/cleanup checked; desktop DND transitions not tested.")
+        if checks.get("shortcut_identity") != "OK":
+            raise RuntimeError("Native shortcut/AUMID round trip was not checked")
+        print("::notice title=Windows notification identity smoke::"
+              "Native shortcut/AUMID created and read back successfully in isolated storage. "
+              "Interactive Settings discovery/priority banners not tested.")
         print("Windows frozen app: worker ready, settings reopen, isolated native integration smoke OK")
 
 
