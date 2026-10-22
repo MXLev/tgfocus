@@ -57,6 +57,7 @@ try {
         $report.status = 'scanner_unavailable'
         throw 'MpCmdRun.exe is unavailable; no clean scan is claimed'
     }
+    & $scannerPath -? 2>&1 | Set-Content -LiteralPath (Join-Path $reportRoot 'defender-help.txt') -Encoding utf8
     # A custom scan with remediation disabled preserves the original evidence.
     # A nonzero result is not automatically classified as a malware finding.
     & $scannerPath -Scan -ScanType 3 -File $artifactRoot -DisableRemediation 2>&1 |
@@ -75,6 +76,10 @@ try {
 } finally {
     $report.finishedUtc = [DateTime]::UtcNow.ToString('o')
     $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $reportRoot 'report.json') -Encoding utf8
+    # Keep the compact verdict accessible through the Checks API as well as
+    # downloadable logs; no credentials or message data enter this workflow.
+    $annotation = ($report | ConvertTo-Json -Depth 6 -Compress).Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+    Write-Output "::notice title=Windows artifact scan::$annotation"
     if ($env:GITHUB_STEP_SUMMARY) {
         @(
             '### Existing Windows artifact: Defender check'
