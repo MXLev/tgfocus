@@ -249,7 +249,8 @@ class SettingsWindow(QMainWindow):
         layout = self._page("connection", "Подключение")
         layout.addWidget(paragraph("Нужны твои API ID и API Hash с my.telegram.org/apps. "
             "Это отдельная пользовательская сессия Telegram. Ключи и сессия защищены средствами Windows; "
-            "код входа и пароль не сохраняются."))
+            "код входа и пароль не сохраняются. Для повторного подключения оставь поля пустыми — "
+            "будут использованы сохранённые ключи. Чтобы заменить их, введи оба значения."))
         form = QFormLayout()
         self.api_id = QLineEdit()
         self.api_id.setPlaceholderText("Числовой API ID")

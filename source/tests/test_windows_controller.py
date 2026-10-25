@@ -190,6 +190,49 @@ class ControllerTests(unittest.TestCase):
         self.controller.connect_telegram("1" * 5000, "a" * 32)
         self.assertEqual(len(self.controller.bridge.commands), 1)
 
+    def test_reconnect_with_empty_fields_reuses_saved_session_without_rewriting_secrets(self):
+        saved = {"apiId": "123", "apiHash": "a" * 32, "session": "TEST_SESSION"}
+        self.controller._secrets = copy.deepcopy(saved)
+        self.controller._worker_error("Connection failed")
+        self.controller.vault.save.side_effect = OSError("Storage unavailable")
+        window = SettingsWindow(self.controller)
+        window.connect_telegram()
+        self.assertEqual(self.controller.bridge.commands[-1], {"command": "connect", **saved})
+        self.assertEqual(self.controller._secrets, saved)
+        self.controller.vault.save.assert_not_called()
+        self.assertEqual(self.controller.error_text, "")
+        self.assertEqual(window.api_id.text(), "")
+        self.assertEqual(window.api_hash.text(), "")
+        window.deleteLater()
+
+    def test_retry_after_ui_clears_hash_keeps_existing_api_pair(self):
+        window = SettingsWindow(self.controller)
+        window.api_id.setText("123")
+        window.api_hash.setText("a" * 32)
+        window.connect_telegram()
+        self.assertEqual(window.api_hash.text(), "")
+        self.controller._worker_error("Connection failed")
+        window.connect_telegram()
+        connects = [item for item in self.controller.bridge.commands if item["command"] == "connect"]
+        self.assertEqual(len(connects), 2)
+        self.assertEqual(connects[0], connects[1])
+        self.controller.vault.save.assert_called_once()
+        window.deleteLater()
+
+    def test_reconnect_never_mixes_partial_replacement_with_saved_credentials(self):
+        for api_id, api_hash, saved in [
+            ("456", "", {"apiId": "123", "apiHash": "a" * 32}),
+            ("", "b" * 32, {"apiId": "123", "apiHash": "a" * 32}),
+            ("", "", {}),
+            ("", "", {"apiId": "123"}),
+        ]:
+            with self.subTest(api_id=api_id, hash_entered=bool(api_hash), saved=bool(saved)):
+                self.controller._secrets = copy.deepcopy(saved)
+                self.controller.connect_telegram(api_id, api_hash)
+                self.assertEqual(self.controller._secrets, saved)
+                self.assertEqual(len(self.controller.bridge.commands), 1)
+        self.controller.vault.save.assert_not_called()
+
     def test_registration_repair_reports_failure_without_changing_filter_or_ai_settings(self):
         original = copy.deepcopy(self.controller.config)
         self.controller.notifications.repair.return_value = False

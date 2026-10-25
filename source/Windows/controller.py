@@ -220,11 +220,19 @@ class Controller(QObject):
 
     def connect_telegram(self, api_id, api_hash):
         api_id, api_hash = str(api_id).strip(), str(api_hash).strip()
+        saved_id = str(self._secrets.get("apiId", "")).strip()
+        reuse_saved = not api_hash and (not api_id or api_id == saved_id)
+        if reuse_saved:
+            api_id, api_hash = saved_id, self._secrets.get("apiHash", "")
         if not re.fullmatch(r"[0-9]{1,10}", api_id) or not 0 < int(api_id) < 2**31 or not re.fullmatch(r"[a-fA-F0-9]{32}", api_hash):
             self._worker_error("Введи API ID числом и API Hash из 32 шестнадцатеричных символов с my.telegram.org.")
             return
         if not self.helper_ready:
             self._worker_error("Подожди запуска модуля Telegram.")
+            return
+        if reuse_saved and not self._smoke:
+            self.error_text = ""
+            self._connect_saved()
             return
         previous = copy.deepcopy(self._secrets)
         self._secrets.update(apiId=api_id, apiHash=api_hash)
