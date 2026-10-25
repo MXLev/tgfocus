@@ -17,6 +17,7 @@ from dnd import WnfApi, WnfDndMonitor
 from storage import CredentialVault
 from window import SettingsWindow
 from icons import application_icon, asset_path, verify_executable_icon
+from version import VERSION
 
 
 def tray_icon(enabled):
@@ -124,6 +125,7 @@ def smoke_native(directory):
     available = notifications.available
     notifications.close()  # No actual notifications or account/network requests.
     return {"platform": "Windows", "dpapi": "OK", "focus": active,
+            "version": VERSION,
             "embedded_icon": embedded_icon, **construction,
             "startup_identity": "OK",
             "focus_status": focus_status, "wnf_subscribed": subscribed, "shortcut_identity": "OK",
@@ -150,6 +152,7 @@ def main():
         os.environ["TELEGRAM_FOCUS_DATA_DIR"] = temporary.name
     application = QApplication(sys.argv)
     application.setApplicationName("TGFocus")
+    application.setApplicationVersion(VERSION)
     application.setOrganizationName("MXLev")
     application.setQuitOnLastWindowClosed(False)
     application.setWindowIcon(application_icon())

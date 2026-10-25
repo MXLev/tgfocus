@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+from version import VERSION
 
 from PySide6.QtCore import Qt, QSignalBlocker, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QImage, QPainter, QPixmap
@@ -117,13 +118,14 @@ class SettingsWindow(QMainWindow):
         self._activity_snapshot = None
         self._displayed_qr = None
         self._pickers = []
-        self.setWindowTitle("Telegram Focus — Windows, эксперимент")
+        self.setWindowTitle(f"Telegram Focus — Windows v{VERSION}, предварительный выпуск")
         self.resize(860, 760)
         central = QWidget()
         layout = QVBoxLayout(central)
         heading = QLabel("Telegram Focus")
         heading.setStyleSheet("font-size: 24px; font-weight: 600;")
         layout.addWidget(heading)
+        layout.addWidget(paragraph(f"Windows v{VERSION} · предварительный выпуск"))
         layout.addWidget(paragraph("Работает в трее рядом с часами. Закрытие этого окна не останавливает фильтр."))
         self.error_row = QWidget()
         error_layout = QHBoxLayout(self.error_row)
@@ -399,9 +401,13 @@ class SettingsWindow(QMainWindow):
     def _ai(self):
         layout = self._page("ai", "ИИ-фильтр")
         layout.addWidget(paragraph("ИИ выключен по умолчанию. При включении первые 4000 символов "
-            "подходящего сообщения передаются OpenRouter и выбранному провайдеру модели либо напрямую DeepSeek. "
+            "подходящего сообщения передаются OpenRouter и провайдеру, исполняющему модель, либо напрямую DeepSeek. "
             "Сам текст может содержать личные данные. История, вложения, имена и ID отдельно не добавляются. "
             "Сначала исключи конфиденциальные диалоги ниже."))
+        privacy = QPushButton("Приватность и политики внешних сервисов")
+        privacy.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(
+            f"https://github.com/MXLev/tgfocus/blob/windows-v{VERSION}/PRIVACY.md")))
+        layout.addWidget(privacy)
         self.ai_enabled = self._toggle("Отправлять подходящие сообщения в ИИ", "aiEnabled", layout)
         form = QFormLayout()
         self.ai_provider = QComboBox()

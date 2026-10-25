@@ -10,6 +10,7 @@ import subprocess
 import sys
 import sysconfig
 import traceback
+from version import write_version_info
 
 WINDOWS = Path(__file__).resolve().parent
 SOURCE = WINDOWS.parent
@@ -74,6 +75,10 @@ def main():
     assets = BUILD / "assets"
     run(python, WINDOWS / "icons.py", assets)
     executable_icon = "NONE" if args.without_exe_icons else assets / "app.ico"
+    app_version = BUILD / "app-version.txt"
+    worker_version = BUILD / "worker-version.txt"
+    write_version_info(app_version, "TGFocus.exe", "TGFocus Telegram notification filter")
+    write_version_info(worker_version, "focus-worker.exe", "TGFocus Telegram worker")
     # macOS app replacement tests use fcntl/ps and run in existing Linux/mac CI.
     for pattern in ("test_filter.py", "test_notification_settings.py", "test_ai_filter.py", "test_worker_ipc.py", "test_windows*.py"):
         run(python, "-m", "unittest", "discover", "-s", SOURCE / "tests", "-p", pattern, "-v")
@@ -81,6 +86,7 @@ def main():
     worker_dist = BUILD / "worker-dist"
     run(python, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir", "--console",
         "--name", "focus-worker", "--icon", executable_icon,
+        "--version-file", worker_version,
         "--distpath", worker_dist, "--workpath", BUILD / "worker-work",
         "--specpath", BUILD, "--paths", SOURCE / "Helper", SOURCE / "Helper/worker.py")
     worker = worker_dist / "focus-worker"
@@ -91,6 +97,7 @@ def main():
         "--name", "TGFocus", "--distpath", app_dist, "--workpath", BUILD / "app-work",
         "--specpath", BUILD, "--paths", WINDOWS,
         "--icon", executable_icon, "--add-data", str(assets) + os.pathsep + "assets",
+        "--version-file", app_version,
         "--additional-hooks-dir", WINDOWS / "hooks",
         "--collect-all", "windows_toasts", "--collect-all", "winrt",
         "--hidden-import", "PySide6.support.deprecated",
@@ -106,7 +113,9 @@ def main():
         shutil.rmtree(package)
     shutil.copytree(app_dist / "TGFocus", package)
     shutil.copytree(worker, package / "helper")
-    for file in ("WINDOWS.ru.md", "WINDOWS-SIGNING.ru.md", "AI.ru.md", "LICENSE"):
+    documentation = ("WINDOWS.ru.md", "WINDOWS-SIGNING.ru.md", "WINDOWS-UNINSTALL.ru.md",
+                     "WINDOWS-RELEASE-NOTES.md", "CODE_SIGNING_POLICY.md", "PRIVACY.md", "AI.ru.md", "LICENSE")
+    for file in documentation:
         shutil.copy2(ROOT / file, package / file)
     run(python, __file__, "--collect-licenses", package / "Licenses")
     shutil.copytree(WINDOWS / "licenses", package / "Licenses/Qt-notices")
@@ -122,7 +131,9 @@ def main():
     shutil.copytree(WINDOWS / "hooks", source_copy / "source/Windows/hooks",
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     shutil.copytree(WINDOWS / "licenses", source_copy / "source/Windows/licenses")
-    for file in ("WINDOWS.ru.md", "WINDOWS-SIGNING.ru.md", "AI.ru.md", "LICENSE"):
+    shutil.copytree(ROOT / ".github/scripts", source_copy / ".github/scripts",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    for file in documentation:
         shutil.copy2(ROOT / file, source_copy / file)
     # Catch accidental Qt optional-module collection instead of silently shipping
     # GPL-only plugins alongside an LGPL-component notice set.

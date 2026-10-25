@@ -4,7 +4,31 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Windows"))
+from version import FILE_VERSION, PRODUCT_NAME, VERSION
+
+
+def verify_pe_version(executable):
+    import pefile  # Supplied by the pinned Windows PyInstaller build environment.
+    with pefile.PE(str(executable)) as image:
+        fixed, = image.VS_FIXEDFILEINFO
+        actual = (fixed.ProductVersionMS >> 16, fixed.ProductVersionMS & 65535,
+                  fixed.ProductVersionLS >> 16, fixed.ProductVersionLS & 65535)
+        if actual != FILE_VERSION:
+            raise RuntimeError("PE product version does not match the release version")
+        strings = {}
+        for group in image.FileInfo:
+            for info in group:
+                if info.Key == b"StringFileInfo":
+                    for table in info.StringTable:
+                        strings.update(table.entries)
+        expected = {b"ProductName": PRODUCT_NAME.encode(), b"ProductVersion": VERSION.encode(),
+                    b"OriginalFilename": executable.name.encode()}
+        if any(strings.get(key) != value for key, value in expected.items()):
+            raise RuntimeError("PE product identity does not match the release metadata")
 
 
 def main():
@@ -38,6 +62,11 @@ def main():
         if not worker.is_file():
             raise RuntimeError("Portable package is missing its bundled worker")
         checks = receipt.get("checks", {})
+        if checks.get("version") != VERSION:
+            raise RuntimeError("Frozen runtime version does not match the release version")
+        for binary in (executable, worker):
+            verify_pe_version(binary)
+        print(f"::notice title=Windows product version::Both EXEs and the runtime report TGFocus {VERSION}.")
         print("::notice title=Windows WNF startup smoke::"
               f"Subscription={checks.get('wnf_subscribed')}; DND={checks.get('focus')}. "
               "Read-only native startup/cleanup checked; desktop DND transitions not tested.")
