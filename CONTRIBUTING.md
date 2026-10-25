@@ -14,7 +14,7 @@ python3.13 -m venv .venv
 .venv/bin/python -m unittest discover -s source/tests -p 'test_*.py' -v
 ```
 
-The experimental Windows tray client lives in `source/Windows`; see [WINDOWS.ru.md](WINDOWS.ru.md). On Windows x64 with Python 3.13 run `py -3.13 source/Windows/build.py` to build/test a self-contained portable ZIP. Qt-specific tests skip if PySide6 is absent from Linux/macOS environments. The Windows workflow tests real DPAPI and frozen imports/GUI/worker on the hosted Windows image; visible Windows 11 notifications and Focus Sessions require a desktop check. Never use real keys or accounts in CI. The Windows PR currently depends on the common worker/AI changes in PR #6.
+The Windows tray client lives in `source/Windows`; see [WINDOWS.ru.md](WINDOWS.ru.md). On Windows x64 with Python 3.13 run `py -3.13 source/Windows/build.py` to build/test a self-contained portable ZIP. Qt-specific tests skip if PySide6 is absent from Linux/macOS environments. The Windows workflow tests real DPAPI and frozen imports/GUI/worker on the hosted Windows image; visible Windows 11 notifications and Do Not Disturb behavior require a desktop check. Never use real keys or accounts in CI.
 
 Building the native app requires an Apple Silicon Mac, macOS 14+, Python 3.13, and Xcode Command Line Tools. To package a DMG, also install [Homebrew](https://brew.sh/) and GNU coreutils. These are build tools, not requirements for users installing the DMG:
 
@@ -53,7 +53,17 @@ The CI job validates the DMG automatically, but only this test on your Mac valid
 - Check mention-only and reply-only switches independently, including a reply that also explicitly mentions you. Check inherited chat/category mute settings, a muted forum topic in an unmuted group, an explicitly unmuted topic, and the General topic.
 - While the app is running, a source build must refuse to replace it. Run two source builds concurrently: the second must stop before touching shared output. The runtime lock covers the entire first build through installation. Python tests exercise copy/validation failures, rollback, and lock contention throughout the build.
 
-### Release checklist
+### Windows release checklist
+
+1. Set `source/Windows/version.py` to a new version. Review the code, privacy/system changes and dependency notices; run the full tests and Windows build.
+2. Test the downloaded package on Windows 11: first launch, Telegram login, notifications, muted chats/topics, AI opt-in and exclusions, DND, startup if changed, and update/removal. Record the actual scope, including any preceding build used for a functional check. Do not infer a manual pass from CI.
+3. Push `windows-v<version>` for that exact reviewed commit. **Windows build and checks** verifies both EXE versions, frozen runtime/integration tests and Defender evidence with updated definitions, then creates a **draft prerelease** with an unchanged, versioned ZIP, SHA-256, manifest, scan report and provenance. The tag and version must match.
+4. Review the draft, CI result, source commit and asset digest. Publish manually when ready. A regular release requires maintainer review of the manual-check scope; new draft builds do not become stable automatically. Windows v0.1.0 was published unsigned and later promoted after the maintainer requested the public release; its notes distinguish the functional check from the version/metadata rebuild.
+5. Keep published files/tags unchanged. A later signed build receives a new version and hashes. Signing remains unavailable until the account/MFA/provider steps in [the policy](CODE_SIGNING_POLICY.md) are complete; every future signing request still needs human approval.
+
+Windows and macOS have separate versions and tags. A Windows release does not publish a new Mac DMG. The Windows workflow can also create test artifacts on pull requests or manual dispatch; those are not releases.
+
+### macOS release checklist
 
 1. Run the full macOS build and DMG smoke test above, or download the successful CI run's DMG artifact.
 2. On a Mac, test the downloaded DMG: drag to Applications, eject the image, and launch the installed app. Check the expected Gatekeeper prompt and the documented first-launch steps. Automated tests do not validate Gatekeeper or the graphical interface.
