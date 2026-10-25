@@ -186,5 +186,5 @@ jobs:
           fi
           release_version="$(python source/Windows/version.py)"
           gh release create "$RELEASE_TAG" release-assets/* \
-            --verify-tag --draft --prerelease --latest=false \
+            --verify-tag --target "$RELEASE_COMMIT" --draft --prerelease --latest=false \
             --title "TGFocus for Windows v$release_version" --notes-file windows-release-body.md
