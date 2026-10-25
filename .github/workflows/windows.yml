@@ -66,6 +66,7 @@ jobs:
     timeout-minutes: 30
     env:
       PYTHONUTF8: '1'
+      PYTHONHASHSEED: '0'
       TGFOCUS_SOURCE_RUN: ${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
@@ -73,6 +74,11 @@ jobs:
         with:
           python-version: '3.13'
           architecture: x64
+      - name: Fix the build timestamp for both variants
+        shell: pwsh
+        run: |
+          $epoch = (git log -1 --format=%ct).Trim()
+          "SOURCE_DATE_EPOCH=$epoch" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build and test with embedded icons
         run: python source/Windows/build.py
       - name: Scan package with embedded icons
@@ -91,6 +97,9 @@ jobs:
       - name: Stage second package
         shell: pwsh
         run: Move-Item -LiteralPath dist -Destination icon-comparison/none
+      - name: Compare payload hashes outside the two EXEs
+        shell: pwsh
+        run: ./.github/scripts/compare-windows-payloads.ps1 -ReportDirectory security-report
       - uses: actions/upload-artifact@v4
         with:
           name: TGFocus-Windows-icons-custom
