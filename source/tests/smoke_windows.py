@@ -46,6 +46,11 @@ def main():
         print("::notice title=Windows notification identity smoke::"
               "Native shortcut/AUMID created and read back successfully in isolated storage. "
               "Interactive Settings discovery/priority banners not tested.")
+        if checks.get("startup_identity") != "OK":
+            raise RuntimeError("Isolated startup shortcut add/read/remove was not checked")
+        print("::notice title=Windows startup identity smoke::"
+              "Current-user Startup folder resolved read-only; startup shortcut add/read/idempotence/remove "
+              "passed in a temporary folder. Real sign-in and Settings discovery not tested.")
         if checks.get("notification_construction") != "OK" or checks.get("cases") != 3:
             raise RuntimeError("Real WinRT notification XML/data/audio/callback construction was not checked")
         print("::notice title=Windows notification construction smoke::"

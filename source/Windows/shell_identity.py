@@ -54,6 +54,7 @@ _IID_SHELL_LINK_W = _GUID.parse("000214f9-0000-0000-c000-000000000046")
 _IID_PERSIST_FILE = _GUID.parse("0000010b-0000-0000-c000-000000000046")
 _IID_PROPERTY_STORE = _GUID.parse("886d8eeb-8cf2-4446-8d02-cdba1dbdcf99")
 _FOLDERID_PROGRAMS = _GUID.parse("a77f5d77-2e2b-44c3-a6a2-aba601054a51")
+_FOLDERID_STARTUP = _GUID.parse("b97d20bb-f46a-4c97-ba10-5e3608430854")
 _APP_ID_KEY = _PropertyKey(_GUID.parse("9f4c2855-9f79-4b39-a8d0-e1d42de1d5f3"), 5)
 
 
@@ -147,16 +148,15 @@ class _NativeAPI:
         return _Interface(pointer)
 
 
-def get_programs_directory():
-    """Return this Windows user's Start Menu Programs folder, without elevation."""
+def _known_directory(identifier, *, flags=0):
     try:
         with _NativeAPI() as api:
             pointer = ctypes.c_void_p()
             try:
-                _check(api.shell.SHGetKnownFolderPath(ctypes.byref(_FOLDERID_PROGRAMS), 0, None,
+                _check(api.shell.SHGetKnownFolderPath(ctypes.byref(identifier), flags, None,
                                                      ctypes.byref(pointer)))
                 if not pointer.value:
-                    raise ShortcutIdentityError("Windows не предоставила папку меню «Пуск».")
+                    raise ShortcutIdentityError("Windows не предоставила системную папку пользователя.")
                 return Path(ctypes.wstring_at(pointer.value))
             finally:
                 if pointer.value:
@@ -164,7 +164,19 @@ def get_programs_directory():
     except ShortcutIdentityError:
         raise
     except Exception:
-        raise ShortcutIdentityError("Не удалось определить пользовательскую папку меню «Пуск».") from None
+        raise ShortcutIdentityError("Не удалось определить системную папку пользователя Windows.") from None
+
+
+def get_programs_directory():
+    """Return this Windows user's Start Menu Programs folder, without elevation."""
+    return _known_directory(_FOLDERID_PROGRAMS)
+
+
+def get_startup_directory():
+    """Return only the current user's Startup folder; never the all-users folder."""
+    # KF_FLAG_DONT_VERIFY: a fresh profile may not have this directory yet.
+    # Resolve its location without creating it until the user opts in.
+    return _known_directory(_FOLDERID_STARTUP, flags=0x4000)
 
 
 def _write_shortcut(api, path, executable, arguments, app_id, icon):

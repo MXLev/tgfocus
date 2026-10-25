@@ -17,6 +17,7 @@ DEFAULT_CONFIG = {
     "aiEnabled": False, "aiProvider": "openrouter", "aiModel": "openrouter/free",
     "aiMinimumPriority": "high", "aiInstruction": "", "aiHourlyLimit": 30,
     "aiExcludedChats": [],
+    "startupOfferShown": False,
 }
 _SECRET_FIELDS = {"apikey", "apikeys", "aiapikey", "apihash", "apiid", "session", "credentials", "password", "token"}
 _MAX_CONFIG_BYTES = 1_048_576
@@ -45,7 +46,7 @@ def normalize_config(config):
     _reject_secrets(config)
     result = copy.deepcopy(DEFAULT_CONFIG)
     for key in ("enabled", "allPrivate", "showPreview", "playSound", "allowMentions", "allowReplies",
-                "windowsFocusAutomation", "aiEnabled"):
+                "windowsFocusAutomation", "aiEnabled", "startupOfferShown"):
         value = config.get(key, result[key])
         if not isinstance(value, bool):
             raise StorageError("Переключатели настроек должны содержать логические значения.")

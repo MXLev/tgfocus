@@ -97,6 +97,20 @@ def smoke_native(directory):
             winreg.DeleteKey(winreg.HKEY_CURRENT_USER, "Software\\Classes\\AppUserModelId\\" + smoke_id)
         except FileNotFoundError:
             pass
+    from shell_identity import get_startup_directory
+    from startup import StartupService
+    if not get_startup_directory().is_absolute():
+        raise RuntimeError("Current-user Startup directory is not absolute")
+    startup = StartupService(directory=directory / "startup-smoke")
+    if startup.registered or not startup.set_enabled(True) or not startup.current:
+        raise RuntimeError("Isolated startup shortcut registration failed")
+    startup_path = directory / "startup-smoke/TGFocus.lnk"
+    before = startup_path.stat().st_mtime_ns
+    startup.refresh()
+    if not startup.set_enabled(True) or startup_path.stat().st_mtime_ns != before:
+        raise RuntimeError("Startup registration was unnecessarily rewritten")
+    if not startup.set_enabled(False) or startup_path.exists():
+        raise RuntimeError("Isolated startup shortcut removal failed")
     WnfApi()  # Frozen ctypes exports must bind even if Server has no DND shell.
     observer = WnfDndMonitor(lambda: None)
     try:
@@ -111,6 +125,7 @@ def smoke_native(directory):
     notifications.close()  # No actual notifications or account/network requests.
     return {"platform": "Windows", "dpapi": "OK", "focus": active,
             "embedded_icon": embedded_icon, **construction,
+            "startup_identity": "OK",
             "focus_status": focus_status, "wnf_subscribed": subscribed, "shortcut_identity": "OK",
             "native_notifications_available": available}
 
@@ -143,10 +158,10 @@ def main():
     lock = QLockFile(str(directory / "runtime.lock"))
     lock.setStaleLockTime(0)
     if not lock.tryLock(0):
-        if not smoke:
+        if not smoke and "--autostart" not in sys.argv:
             QMessageBox.information(None, "TGFocus уже запущен", "Открой значок TGFocus рядом с часами или под стрелкой ^. Для другой версии сначала заверши текущую через меню значка.")
-        return 1
-    controller = Controller(directory, smoke=smoke)
+        return 0 if not smoke and "--autostart" in sys.argv else 1
+    controller = Controller(directory, smoke=smoke, startup_launch="--autostart" in sys.argv)
     window = SettingsWindow(controller)
     controller.settings_requested.connect(window.show_page)
     application.aboutToQuit.connect(controller.shutdown)
@@ -185,7 +200,9 @@ def main():
         timer.timeout.connect(check)
         timer.start()
     else:
-        if not QSystemTrayIcon.isSystemTrayAvailable():
+        # At sign-in Explorer's tray may not exist yet. Qt keeps a visible tray
+        # icon pending and adds it when the system tray becomes available.
+        if not QSystemTrayIcon.isSystemTrayAvailable() and "--autostart" not in sys.argv:
             QMessageBox.critical(None, "Системный трей недоступен", "TGFocus нужен системный трей Windows рядом с часами. Запусти приложение в обычном сеансе рабочего стола.")
             return 1
         tray = QSystemTrayIcon(tray_icon(False), application)
@@ -224,7 +241,7 @@ def main():
         application.aboutToQuit.connect(tray.hide)
         tray.show()
         refresh()
-        if not controller._secrets.get("session"):
+        if not controller._secrets.get("session") and "--autostart" not in sys.argv:
             window.show_page("connection")
     QTimer.singleShot(0, controller.start)
     result = application.exec()

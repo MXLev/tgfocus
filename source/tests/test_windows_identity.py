@@ -19,6 +19,22 @@ def fake_native_libraries(initialize=0):
 
 
 class NativeABITests(unittest.TestCase):
+    def test_startup_folder_can_be_resolved_without_creating_or_verifying_it(self):
+        ole, shell = fake_native_libraries()
+        directory = ctypes.create_unicode_buffer("C:\\Users\\Example\\Start Menu\\Programs\\Startup")
+        def known_folder(guid, flags, token, output):
+            self.assertEqual(bytes(guid._obj), uuid.UUID("b97d20bb-f46a-4c97-ba10-5e3608430854").bytes_le)
+            self.assertEqual(flags, 0x4000)  # DONT_VERIFY, never CREATE.
+            self.assertIsNone(token)  # Current user.
+            output._obj.value = ctypes.cast(directory, ctypes.c_void_p).value
+            return 0
+        shell.SHGetKnownFolderPath.side_effect = known_folder
+        with patch.object(identity.sys, "platform", "win32"), patch.object(identity.ctypes, "WinDLL",
+                side_effect=lambda name, **kw: ole if name == "ole32" else shell, create=True):
+            self.assertIn("Startup", str(identity.get_startup_directory()))
+        ole.CoTaskMemFree.assert_called_once()
+        ole.CoUninitialize.assert_called_once()
+
     def test_windows_fixed_width_structures_and_known_property_id(self):
         self.assertEqual(ctypes.sizeof(identity._HRESULT), 4)
         self.assertEqual(ctypes.sizeof(identity._ULONG), 4)

@@ -12,6 +12,7 @@ from platform_services import NotificationService
 from dnd import WnfDndMonitor, is_resume_message
 from protocol import AIFailureGate
 from storage import ConfigStore, CredentialVault, DEFAULT_CONFIG, normalize_config
+from startup import StartupService
 
 
 class _ResumeFilter(QAbstractNativeEventFilter):
@@ -30,10 +31,11 @@ class Controller(QObject):
     qr_changed = Signal(str)
     simulation_received = Signal(bool, str)
     settings_requested = Signal(str)
+    startup_offer_requested = Signal()
     _dnd_dirty = Signal()
     _notification_error = Signal(int, str)
 
-    def __init__(self, directory, *, smoke=False, parent=None):
+    def __init__(self, directory, *, smoke=False, startup_launch=False, parent=None):
         super().__init__(parent)
         self.config_store = ConfigStore(directory)
         self.vault = CredentialVault(directory)
@@ -53,9 +55,11 @@ class Controller(QObject):
         self.qr_expires_at = 0
         self.delivery_method = ""
         self._smoke = smoke
+        self._startup_launch = startup_launch
         self._closing = False
         self._ai_failure = AIFailureGate()
         self.notifications = None if smoke else NotificationService()
+        self.startup = None if smoke else StartupService()
         self._notification_error.connect(self._notification_failed, Qt.ConnectionType.QueuedConnection)
         if self.notifications:
             self.notifications.on_failure = self._notification_error.emit
@@ -94,6 +98,40 @@ class Controller(QObject):
 
     def start(self):
         self.bridge.start()
+
+    def refresh_startup(self):
+        if self.startup:
+            self.startup.refresh()
+        self.changed.emit()
+
+    def set_startup_enabled(self, enabled):
+        previous = self.startup.status_text if self.startup else ""
+        if not self.startup or not self.startup.set_enabled(bool(enabled)):
+            self._worker_error(self.startup.status_text if self.startup else "Автозагрузка отключена в проверочном режиме.")
+            return False
+        if self.error_text == previous:
+            self.error_text = ""
+        self._mark_startup_offer_shown()
+        return True
+
+    def _mark_startup_offer_shown(self):
+        self.config["startupOfferShown"] = True
+        if not self._smoke:
+            try:
+                self.config_store.save(self.config)
+            except Exception:
+                self.error_text = "Не удалось сохранить выбор показа предложения автозагрузки."
+        self.changed.emit()
+
+    def _offer_startup(self):
+        if (self._smoke or self._startup_launch or self._closing or not self.startup or
+                not self.startup.available or self.config.get("startupOfferShown")):
+            return
+        # Persist before showing the dialog; declining must not trigger a prompt
+        # on every reconnect. This preference is never sent to the worker.
+        self._mark_startup_offer_shown()
+        if not self.startup.registered:
+            self.startup_offer_requested.emit()
 
     @Slot(str)
     def _worker_error(self, message):
@@ -162,6 +200,7 @@ class Controller(QObject):
         if not self.helper_ready or self._closing:
             return
         config = copy.deepcopy(self.config)
+        config.pop("startupOfferShown", None)
         config["processingEnabled"] = self.effective_filter_enabled
         config["aiApiKey"] = self._secrets.get("aiKeys", {}).get(config.get("aiProvider"), "") if config.get("aiEnabled") else ""
         self.bridge.send({"command": "config", "config": config})
@@ -303,6 +342,8 @@ class Controller(QObject):
             if self.state != "qr":
                 self.qr_url = ""
                 self.qr_changed.emit("")
+            if self.state == "connected":
+                self._offer_startup()
         elif kind == "qr":
             url = event.get("url", "")
             self.qr_url = url if re.fullmatch(r"tg://login\?token=[A-Za-z0-9_-]{1,2048}", url) else ""

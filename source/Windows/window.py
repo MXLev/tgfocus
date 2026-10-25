@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 
-from PySide6.QtCore import Qt, QSignalBlocker, QUrl
+from PySide6.QtCore import Qt, QSignalBlocker, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
@@ -147,6 +147,7 @@ class SettingsWindow(QMainWindow):
         controller.changed.connect(self.refresh)
         controller.qr_changed.connect(self.render_qr)
         controller.simulation_received.connect(self.show_simulation)
+        controller.startup_offer_requested.connect(lambda: QTimer.singleShot(0, self.offer_startup))
         self.refresh()
 
     def _page(self, key: str, title: str):
@@ -184,6 +185,23 @@ class SettingsWindow(QMainWindow):
         layout.addWidget(self.master)
         self.connection_status = paragraph("")
         layout.addWidget(self.connection_status)
+        startup = self._group("Запуск вместе с Windows", layout)
+        self.startup_checkbox = QCheckBox("Добавить TGFocus в автозагрузку Windows")
+        self.startup_checkbox.toggled.connect(self.controller.set_startup_enabled)
+        startup.addWidget(self.startup_checkbox)
+        self.startup_status = paragraph("")
+        startup.addWidget(self.startup_status)
+        startup.addWidget(paragraph("По умолчанию выключено. При входе в Windows приложение запускается "
+            "в трее с сохранёнными настройками. Windows может отдельно отключить запуск в своих параметрах."))
+        self.startup_settings = QPushButton("Открыть автозагрузку Windows")
+        self.startup_settings.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("ms-settings:startupapps")))
+        startup.addWidget(self.startup_settings)
+        self.startup_repair = QPushButton("Обновить путь к этой копии TGFocus")
+        self.startup_repair.clicked.connect(lambda: self.controller.set_startup_enabled(True))
+        startup.addWidget(self.startup_repair)
+        startup_refresh = QPushButton("Обновить состояние автозагрузки")
+        startup_refresh.clicked.connect(self.controller.refresh_startup)
+        startup.addWidget(startup_refresh)
         auto = self._group("Автоматизация — эксперимент", layout)
         self.auto_focus = self._toggle("По режиму «Не беспокоить» Windows (WNF)",
                                        "windowsFocusAutomation", auto)
@@ -480,6 +498,12 @@ class SettingsWindow(QMainWindow):
              "попроси другого человека написать подходящее сообщение и проверь реальный баннер. Проверь "
              "обычное сообщение, заглушённый чат, выключение фильтра и переход по баннеру. Во сне, без сети "
              "или после «Завершить TGFocus» приложение новые сообщения не обрабатывает. Это экспериментальная Windows-версия."),
+            ("8. Автозагрузка — по желанию", "После первого подключения TGFocus один раз предложит запуск "
+             "при входе в Windows. Галочка по умолчанию снята. Позже открой «Обзор» → «Запуск вместе с Windows» "
+             "и добавь TGFocus в автозагрузку. В «Открыть автозагрузку Windows» можно отдельно разрешить "
+             "или запретить запуск. При входе приложение работает в трее без окна настроек. Если перенёс "
+             "папку программы, нажми «Обновить путь к этой копии TGFocus». Перед удалением папки "
+             "сними галочку в TGFocus, чтобы удалить его запись автозагрузки."),
         ]
         for title, text in steps:
             group = self._group(title, layout)
@@ -487,10 +511,35 @@ class SettingsWindow(QMainWindow):
         layout.addStretch()
 
     def show_page(self, page: str):
+        self.controller.refresh_startup()
         self.tabs.setCurrentWidget(self.pages.get(page, self.pages["overview"]))
         self.show()
         self.raise_()
         self.activateWindow()
+
+    def offer_startup(self):
+        controller = self.controller
+        if controller._closing or not controller.startup or not controller.startup.available:
+            return
+        controller.refresh_startup()
+        if controller.startup.registered:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Запуск TGFocus вместе с Windows")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(paragraph("Добавить TGFocus в автозагрузку? При входе в Windows он будет "
+            "запускаться в трее с сохранёнными настройками. Это можно изменить позже в «Обзоре»."))
+        checkbox = QCheckBox("Запускать TGFocus при входе в Windows")
+        checkbox.setChecked(False)
+        layout.addWidget(checkbox)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Готово")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Не сейчас")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted and checkbox.isChecked():
+            controller.set_startup_enabled(True)
 
     def closeEvent(self, event):
         event.ignore()
@@ -605,6 +654,13 @@ class SettingsWindow(QMainWindow):
         self.connection_status.setText(controller.status_text + (" · " + controller.account_name if controller.account_name else ""))
         self.focus_status.setText(controller.focus_status)
         self.notification_status.setText(controller.notification_status)
+        startup = controller.startup
+        with QSignalBlocker(self.startup_checkbox):
+            self.startup_checkbox.setChecked(bool(startup and startup.registered))
+        self.startup_checkbox.setEnabled(bool(startup and startup.available))
+        self.startup_settings.setEnabled(bool(startup and startup.available))
+        self.startup_status.setText(startup.status_text if startup else "Автозагрузка выключена в проверочном режиме.")
+        self.startup_repair.setVisible(bool(startup and startup.registered and not startup.current))
         self.counters.setText(f"Разрешено правилами: {controller.passed} · Отклонено: {controller.suppressed}")
         self.ai_status.setText(controller.ai_status)
         self.ai_key_status.setText("Ключ выбранного провайдера сохранён" if controller.has_ai_key() else "Ключ не задан")

@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
     from PySide6.QtCore import QObject, Signal
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QCheckBox, QDialog
 except ImportError:
     raise unittest.SkipTest("Windows UI tests require PySide6; run in the Windows build environment")
 
@@ -50,6 +50,8 @@ class ControllerTests(unittest.TestCase):
                                   read=Mock(return_value=(None, "Unknown")), close=Mock(return_value=True)))),
                               ("controller.NotificationService", Mock(return_value=Mock(show=Mock(return_value=True),
                                   status_text="Уведомления разрешены", repair=Mock(return_value=True)))),
+                              ("controller.StartupService", Mock(return_value=Mock(available=False,
+                                  registered=False, current=False, status_text="Автозагрузка выключена"))),
                               ("controller.CredentialVault", Mock(return_value=Mock(load=Mock(return_value={}), save=Mock())))]:
             patcher = patch(target, value)
             patcher.start()
@@ -57,6 +59,103 @@ class ControllerTests(unittest.TestCase):
         self.controller = Controller(Path(self.temporary.name))
         self.addCleanup(self.controller.shutdown)
         self.controller.receive({"type": "ready"})
+
+    def test_startup_is_off_by_default_and_only_explicit_action_changes_registration(self):
+        self.assertFalse(self.controller.startup.registered)
+        self.controller.startup.set_enabled.assert_not_called()
+        self.controller.refresh_startup()
+        self.controller.startup.set_enabled.assert_not_called()
+        self.controller.startup.set_enabled.return_value = True
+        commands_before = len(self.controller.bridge.commands)
+        self.assertTrue(self.controller.set_startup_enabled(True))
+        self.controller.startup.set_enabled.assert_called_once_with(True)
+        self.assertTrue(self.controller.config["startupOfferShown"])
+        self.assertEqual(len(self.controller.bridge.commands), commands_before)
+        self.assertNotIn("startupOfferShown", self.controller.bridge.commands[-1]["config"])
+
+    def test_startup_offer_is_once_after_login_and_never_enables_on_its_own(self):
+        self.controller.startup.available = True
+        requests = []
+        self.controller.startup_offer_requested.connect(lambda: requests.append(True))
+        for _ in range(2):
+            self.controller.receive({"type": "state", "state": "connected"})
+        self.assertEqual(requests, [True])
+        self.controller.startup.set_enabled.assert_not_called()
+        self.assertTrue(self.controller.config_store.load()["startupOfferShown"])
+
+    def test_background_launch_and_shutdown_never_show_startup_offer(self):
+        self.controller.startup.available = True
+        requests = []
+        self.controller.startup_offer_requested.connect(lambda: requests.append(True))
+        self.controller._startup_launch = True
+        self.controller.receive({"type": "state", "state": "connected"})
+        self.controller._startup_launch = False
+        self.controller.shutdown()
+        self.controller.receive({"type": "state", "state": "connected"})
+        self.assertEqual(requests, [])
+        self.assertFalse(self.controller.config["startupOfferShown"])
+
+    def test_accepting_startup_offer_with_unchecked_checkbox_keeps_it_disabled(self):
+        self.controller.startup.available = True
+        window = SettingsWindow(self.controller)
+        self.addCleanup(window.deleteLater)
+        with patch("window.QDialog.exec", return_value=QDialog.DialogCode.Accepted):
+            window.offer_startup()
+        self.controller.startup.set_enabled.assert_not_called()
+
+    def test_startup_offer_requires_explicit_checked_consent(self):
+        self.controller.startup.available = True
+        self.controller.startup.set_enabled.return_value = True
+        window = SettingsWindow(self.controller)
+        self.addCleanup(window.deleteLater)
+        def accept_with_consent(dialog):
+            checkbox, = dialog.findChildren(QCheckBox)
+            self.assertFalse(checkbox.isChecked())
+            checkbox.setChecked(True)
+            return QDialog.DialogCode.Accepted
+        with patch("window.QDialog.exec", new=accept_with_consent):
+            window.offer_startup()
+        self.controller.startup.set_enabled.assert_called_once_with(True)
+
+    def test_failed_startup_checkbox_change_reverts_without_claiming_enabled(self):
+        self.controller.startup.available = True
+        self.controller.startup.set_enabled.return_value = False
+        window = SettingsWindow(self.controller)
+        self.addCleanup(window.deleteLater)
+        window.startup_checkbox.setChecked(True)
+        self.assertFalse(window.startup_checkbox.isChecked())
+        self.assertEqual(self.controller.error_text, self.controller.startup.status_text)
+
+    def test_duplicate_autostart_exits_quietly(self):
+        import app
+        with patch.object(app.sys, "argv", ["TGFocus.exe", "--autostart"]), \
+             patch.object(app.sys, "platform", "win32"), \
+             patch.object(app, "QApplication", return_value=self.application), \
+             patch.object(app, "data_directory", return_value=Path(self.temporary.name)), \
+             patch.object(app, "QLockFile", return_value=Mock(tryLock=Mock(return_value=False))), \
+             patch.object(app.QMessageBox, "information") as dialog:
+            self.assertEqual(app.main(), 0)
+        dialog.assert_not_called()
+
+    def test_autostart_waits_for_tray_without_opening_settings_or_error_dialog(self):
+        import app
+        fake = Mock(filter_title="Фильтр выключен", status_text="", config={"enabled": False},
+                    effective_filter_enabled=False, _secrets={})
+        with patch.object(app.sys, "argv", ["TGFocus.exe", "--autostart"]), \
+             patch.object(app.sys, "platform", "win32"), \
+             patch.object(app, "QApplication", return_value=self.application), \
+             patch.object(self.application, "exec", return_value=0), \
+             patch.object(app, "data_directory", return_value=Path(self.temporary.name)), \
+             patch.object(app, "QLockFile", return_value=Mock(tryLock=Mock(return_value=True))), \
+             patch.object(app, "Controller", return_value=fake), \
+             patch.object(app, "SettingsWindow") as window, \
+             patch.object(app, "QSystemTrayIcon") as tray, \
+             patch.object(app.QMessageBox, "critical") as error:
+            tray.isSystemTrayAvailable.return_value = False
+            self.assertEqual(app.main(), 0)
+        tray.return_value.show.assert_called_once()
+        window.return_value.show_page.assert_not_called()
+        error.assert_not_called()
 
     def test_runtime_privacy_updates_survive_config_write_failure(self):
         self.controller._secrets = {"aiKeys": {"openrouter": "TEST_KEY"}}
