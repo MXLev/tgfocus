@@ -57,7 +57,7 @@ def build(args):
     swift = args.swift_binary.resolve() if args.swift_binary else BUILD / "TelegramFocus"
     env = dict(os.environ, PYINSTALLER_CONFIG_DIR=str(BUILD / "pyinstaller-cache"))
     sources = [SOURCE / f"App/{name}.swift" for name in
-               ("Models", "Views", "SettingsWindowController", "FilterPresentation", "TelegramFocus")]
+               ("Models", "Views", "OptionalFeaturesViews", "SettingsWindowController", "FilterPresentation", "ShortcutFocusMonitor", "TelegramFocus")]
     if not args.swift_binary:
         run("swiftc", "-swift-version", "5", "-target", "arm64-apple-macosx14.0", "-O",
             "-module-cache-path", BUILD / "swift-cache", "-framework", "AppKit", "-framework", "SwiftUI",
@@ -65,7 +65,8 @@ def build(args):
             *sources, "-o", swift)
     run("swiftc", "-swift-version", "5", "-module-cache-path", BUILD / "swift-cache",
         "-framework", "AppKit", "-framework", "SwiftUI", "-framework", "UserNotifications", "-framework", "Security", "-framework", "CoreImage",
-        SOURCE / "App/Models.swift", SOURCE / "App/SettingsWindowController.swift", SOURCE / "App/FilterPresentation.swift", SOURCE / "tests/NativeTests.swift", "-o", BUILD / "native-tests")
+        SOURCE / "App/Models.swift", SOURCE / "App/SettingsWindowController.swift", SOURCE / "App/FilterPresentation.swift",
+        SOURCE / "App/ShortcutFocusMonitor.swift", SOURCE / "tests/NativeTests.swift", "-o", BUILD / "native-tests")
     run(BUILD / "native-tests")
     helper = args.helper_dir.resolve() if args.helper_dir else BUILD / "dist/focus-worker"
     if not args.helper_dir:
@@ -84,7 +85,7 @@ def build(args):
     shutil.copytree(helper, resources / "helper", symlinks=True)
     plist = dict(CFBundleExecutable="TelegramFocus", CFBundleIdentifier="local.mxlev.TelegramFocus",
                  CFBundleName="Telegram Focus", CFBundleDisplayName="Telegram Focus", CFBundlePackageType="APPL",
-                 CFBundleShortVersionString="1.4.0", CFBundleVersion="8", CFBundleIconFile="AppIcon", LSUIElement=True,
+                 CFBundleShortVersionString="1.5.0", CFBundleVersion="9", CFBundleIconFile="AppIcon", LSUIElement=True,
                  LSMinimumSystemVersion="14.0", NSHighResolutionCapable=True,
                  NSSupportsAutomaticTermination=False, NSPrincipalClass="NSApplication")
     with (contents / "Info.plist").open("wb") as stream: plistlib.dump(plist, stream)

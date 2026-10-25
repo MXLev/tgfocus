@@ -5,6 +5,7 @@ import sys
 import threading
 from queue import Queue
 
+subprocess.run([sys.argv[1], "--check-ai-tls"], check=True, timeout=15)
 process = subprocess.Popen([sys.argv[1]], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE, text=True)
 responses = Queue()
@@ -43,6 +44,11 @@ try:
     assert receive()["allowed"] is False
     send(dict(command="connect", apiId="0", apiHash=""))
     assert receive()["type"] == "error"
+    send(dict(command="config", config=dict(config, aiEnabled=True, aiApiKey="")))
+    assert receive()["type"] == "configSaved"
+    send(dict(command="testAI"))
+    status = receive()
+    assert status["type"] == "aiStatus" and "локальные правила" in status["message"]
     send(dict(command="quit"))
     process.wait(timeout=10)
     assert process.returncode == 0, process.stderr.read()

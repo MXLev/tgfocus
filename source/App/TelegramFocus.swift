@@ -55,11 +55,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter,
         willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([.banner, .sound, .list])
+        var options: UNNotificationPresentationOptions = [.banner, .list]
+        if notification.request.content.sound != nil { options.insert(.sound) }
+        completionHandler(options)
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
-        if let string = response.notification.request.content.userInfo["url"] as? String,
+        if response.notification.request.content.userInfo["settingsPage"] as? String == "ai" {
+            DispatchQueue.main.async {
+                let model = AppModel.shared
+                model.selectedPage = "ai"
+                SettingsWindowController.shared.show {
+                    NSHostingController(rootView: RootView().environmentObject(model))
+                }
+            }
+        } else if let string = response.notification.request.content.userInfo["url"] as? String,
            let url = URL(string: string), url.scheme == "tg" {
             DispatchQueue.main.async { NSWorkspace.shared.open(url) }
         }
@@ -75,8 +85,8 @@ struct TelegramFocusApp: App {
         MenuBarExtra {
             MenuContent().environmentObject(model)
         } label: {
-            Image(nsImage: FilterPresentation.icon(enabled: model.config.enabled))
-                .id(model.config.enabled)
+            Image(nsImage: FilterPresentation.icon(enabled: model.effectiveFilterEnabled))
+                .id(model.effectiveFilterEnabled)
                 .accessibilityLabel("Telegram Focus")
                 .help("Telegram Focus")
         }
@@ -87,8 +97,9 @@ struct MenuContent: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
         Text(model.connected ? "Telegram: \(model.accountName)" : model.statusText)
-        Button(model.filterTitle) { model.setFilterEnabled(!model.config.enabled) }
-        Text("Ручное управление фильтром")
+        Text(model.filterTitle)
+        Button(model.config.enabled ? "Выключить фильтр" : "Включить фильтр") { model.setFilterEnabled(!model.config.enabled) }
+        Text(model.automationStatus)
         Text("Пропущено: \(model.passed) · Заглушено: \(model.suppressed)")
         Divider()
         Button("Открыть настройки…") {
