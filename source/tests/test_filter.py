@@ -279,12 +279,27 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.messages()[-1]["recoverable"])
 
     async def test_logout_revokes_and_disconnects(self):
-        client = SimpleNamespace(log_out=AsyncMock(), disconnect=AsyncMock())
+        client = SimpleNamespace(log_out=AsyncMock(return_value=True), disconnect=AsyncMock())
         self.worker.client = client
         await self.worker.command(dict(command="logout"))
         client.log_out.assert_awaited_once()
         client.disconnect.assert_awaited_once()
         self.assertEqual(self.messages()[-1]["type"], "loggedOut")
+
+    async def test_failed_server_logout_does_not_claim_revocation(self):
+        client = SimpleNamespace(log_out=AsyncMock(return_value=False), disconnect=AsyncMock())
+        self.worker.client = client
+        await self.worker.command(dict(command="logout"))
+        self.assertEqual(self.messages()[-1]["type"], "error")
+        self.assertTrue(self.messages()[-1]["recoverable"])
+        self.assertFalse(any(item["type"] == "loggedOut" for item in self.messages()))
+        client.disconnect.assert_not_awaited()
+        self.assertIs(self.worker.client, client)
+
+    async def test_disconnected_logout_does_not_claim_revocation(self):
+        await self.worker.command(dict(command="logout"))
+        self.assertEqual(self.messages()[-1]["type"], "error")
+        self.assertTrue(self.messages()[-1]["recoverable"])
 
     async def test_runtime_exception_does_not_leak_secret(self):
         self.worker.client = SimpleNamespace(sign_in=AsyncMock(side_effect=ValueError("SECRET_PASSWORD")))

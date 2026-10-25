@@ -7,7 +7,7 @@ from queue import Queue
 
 subprocess.run([sys.argv[1], "--check-ai-tls"], check=True, timeout=15)
 process = subprocess.Popen([sys.argv[1]], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, text=True)
+                           stderr=subprocess.PIPE, text=True, encoding="utf-8")
 responses = Queue()
 def read():
     for line in process.stdout:

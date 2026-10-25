@@ -1,0 +1,3 @@
+# Preserve the exact upstream notice bytes and their recorded SHA-256 digests.
+# Upstream whitespace is intentional and should not be reformatted by linting.
+source/Windows/licenses/** -text -whitespace

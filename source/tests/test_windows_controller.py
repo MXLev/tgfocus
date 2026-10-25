@@ -1,0 +1,359 @@
+import copy
+import os
+import sys
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+try:
+    from PySide6.QtCore import QObject, Signal
+    from PySide6.QtWidgets import QApplication, QCheckBox, QDialog
+except ImportError:
+    raise unittest.SkipTest("Windows UI tests require PySide6; run in the Windows build environment")
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Windows"))
+from controller import Controller
+from storage import DEFAULT_CONFIG
+from window import SettingsWindow
+
+
+class FakeBridge(QObject):
+    event = Signal(dict)
+    error = Signal(str)
+    stopped = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.commands = []
+
+    def send(self, command):
+        self.commands.append(copy.deepcopy(command))
+        return True
+
+    def start(self): pass
+    def stop(self): pass
+
+
+class ControllerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        for target, value in [("controller.WorkerBridge", FakeBridge),
+                              ("controller.WnfDndMonitor", Mock(return_value=Mock(start=Mock(return_value=True),
+                                  read=Mock(return_value=(None, "Unknown")), close=Mock(return_value=True)))),
+                              ("controller.NotificationService", Mock(return_value=Mock(show=Mock(return_value=True),
+                                  status_text="Уведомления разрешены", repair=Mock(return_value=True)))),
+                              ("controller.StartupService", Mock(return_value=Mock(available=False,
+                                  registered=False, current=False, status_text="Автозагрузка выключена"))),
+                              ("controller.CredentialVault", Mock(return_value=Mock(load=Mock(return_value={}), save=Mock())))]:
+            patcher = patch(target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.controller = Controller(Path(self.temporary.name))
+        self.addCleanup(self.controller.shutdown)
+        self.controller.receive({"type": "ready"})
+
+    def test_startup_is_off_by_default_and_only_explicit_action_changes_registration(self):
+        self.assertFalse(self.controller.startup.registered)
+        self.controller.startup.set_enabled.assert_not_called()
+        self.controller.refresh_startup()
+        self.controller.startup.set_enabled.assert_not_called()
+        self.controller.startup.set_enabled.return_value = True
+        commands_before = len(self.controller.bridge.commands)
+        self.assertTrue(self.controller.set_startup_enabled(True))
+        self.controller.startup.set_enabled.assert_called_once_with(True)
+        self.assertTrue(self.controller.config["startupOfferShown"])
+        self.assertEqual(len(self.controller.bridge.commands), commands_before)
+        self.assertNotIn("startupOfferShown", self.controller.bridge.commands[-1]["config"])
+
+    def test_startup_offer_is_once_after_login_and_never_enables_on_its_own(self):
+        self.controller.startup.available = True
+        requests = []
+        self.controller.startup_offer_requested.connect(lambda: requests.append(True))
+        for _ in range(2):
+            self.controller.receive({"type": "state", "state": "connected"})
+        self.assertEqual(requests, [True])
+        self.controller.startup.set_enabled.assert_not_called()
+        self.assertTrue(self.controller.config_store.load()["startupOfferShown"])
+
+    def test_background_launch_and_shutdown_never_show_startup_offer(self):
+        self.controller.startup.available = True
+        requests = []
+        self.controller.startup_offer_requested.connect(lambda: requests.append(True))
+        self.controller._startup_launch = True
+        self.controller.receive({"type": "state", "state": "connected"})
+        self.controller._startup_launch = False
+        self.controller.shutdown()
+        self.controller.receive({"type": "state", "state": "connected"})
+        self.assertEqual(requests, [])
+        self.assertFalse(self.controller.config["startupOfferShown"])
+
+    def test_accepting_startup_offer_with_unchecked_checkbox_keeps_it_disabled(self):
+        self.controller.startup.available = True
+        window = SettingsWindow(self.controller)
+        self.addCleanup(window.deleteLater)
+        with patch("window.QDialog.exec", return_value=QDialog.DialogCode.Accepted):
+            window.offer_startup()
+        self.controller.startup.set_enabled.assert_not_called()
+
+    def test_startup_offer_requires_explicit_checked_consent(self):
+        self.controller.startup.available = True
+        self.controller.startup.set_enabled.return_value = True
+        window = SettingsWindow(self.controller)
+        self.addCleanup(window.deleteLater)
+        def accept_with_consent(dialog):
+            checkbox, = dialog.findChildren(QCheckBox)
+            self.assertFalse(checkbox.isChecked())
+            checkbox.setChecked(True)
+            return QDialog.DialogCode.Accepted
+        with patch("window.QDialog.exec", new=accept_with_consent):
+            window.offer_startup()
+        self.controller.startup.set_enabled.assert_called_once_with(True)
+
+    def test_failed_startup_checkbox_change_reverts_without_claiming_enabled(self):
+        self.controller.startup.available = True
+        self.controller.startup.set_enabled.return_value = False
+        window = SettingsWindow(self.controller)
+        self.addCleanup(window.deleteLater)
+        window.startup_checkbox.setChecked(True)
+        self.assertFalse(window.startup_checkbox.isChecked())
+        self.assertEqual(self.controller.error_text, self.controller.startup.status_text)
+
+    def test_duplicate_autostart_exits_quietly(self):
+        import app
+        with patch.object(app.sys, "argv", ["TGFocus.exe", "--autostart"]), \
+             patch.object(app.sys, "platform", "win32"), \
+             patch.object(app, "QApplication", return_value=self.application), \
+             patch.object(app, "data_directory", return_value=Path(self.temporary.name)), \
+             patch.object(app, "QLockFile", return_value=Mock(tryLock=Mock(return_value=False))), \
+             patch.object(app.QMessageBox, "information") as dialog:
+            self.assertEqual(app.main(), 0)
+        dialog.assert_not_called()
+
+    def test_autostart_waits_for_tray_without_opening_settings_or_error_dialog(self):
+        import app
+        fake = Mock(filter_title="Фильтр выключен", status_text="", config={"enabled": False},
+                    effective_filter_enabled=False, _secrets={})
+        with patch.object(app.sys, "argv", ["TGFocus.exe", "--autostart"]), \
+             patch.object(app.sys, "platform", "win32"), \
+             patch.object(app, "QApplication", return_value=self.application), \
+             patch.object(self.application, "exec", return_value=0), \
+             patch.object(app, "data_directory", return_value=Path(self.temporary.name)), \
+             patch.object(app, "QLockFile", return_value=Mock(tryLock=Mock(return_value=True))), \
+             patch.object(app, "Controller", return_value=fake), \
+             patch.object(app, "SettingsWindow") as window, \
+             patch.object(app, "QSystemTrayIcon") as tray, \
+             patch.object(app.QMessageBox, "critical") as error:
+            tray.isSystemTrayAvailable.return_value = False
+            self.assertEqual(app.main(), 0)
+        tray.return_value.show.assert_called_once()
+        window.return_value.show_page.assert_not_called()
+        error.assert_not_called()
+
+    def test_runtime_privacy_updates_survive_config_write_failure(self):
+        self.controller._secrets = {"aiKeys": {"openrouter": "TEST_KEY"}}
+        self.controller.update_config({"enabled": True, "aiEnabled": True})
+        self.assertEqual(self.controller.bridge.commands[-1]["config"]["aiApiKey"], "TEST_KEY")
+        self.controller.config_store.save = Mock(side_effect=OSError())
+        self.controller.update_config({"aiEnabled": False, "aiExcludedChats": [{"id": "42", "name": "Private"}]})
+        sent = self.controller.bridge.commands[-1]["config"]
+        self.assertEqual(sent["aiApiKey"], "")
+        self.assertEqual(sent["aiExcludedChats"][0]["id"], "42")
+        self.assertIn("не сохранены", self.controller.error_text)
+
+    def test_unknown_focus_pauses_processing_and_late_messages(self):
+        self.controller.update_config({"enabled": True, "windowsFocusAutomation": True})
+        self.assertFalse(self.controller.effective_filter_enabled)
+        self.assertFalse(self.controller.bridge.commands[-1]["config"]["processingEnabled"])
+        self.controller.receive({"type": "message", "allowed": True, "text": "private"})
+        self.controller.notifications.show.assert_not_called()
+        self.controller.dnd.read.return_value = (True, "DND on")
+        self.controller._refresh_focus()
+        self.assertTrue(self.controller.effective_filter_enabled)
+        self.controller.set_filter_enabled(False)
+        self.assertFalse(self.controller.effective_filter_enabled)
+        self.controller.dnd.close.assert_called()
+
+    def test_secret_save_failure_never_sends_new_credential(self):
+        self.controller.vault.save.side_effect = OSError("private OS error")
+        self.controller.connect_telegram("123", "a" * 32)
+        self.assertEqual(len(self.controller.bridge.commands), 1)  # Initial config only.
+        self.assertNotIn("private OS error", self.controller.error_text)
+        self.assertEqual(self.controller._secrets, {})
+        self.controller.connect_telegram("1" * 5000, "a" * 32)
+        self.assertEqual(len(self.controller.bridge.commands), 1)
+
+    def test_reconnect_with_empty_fields_reuses_saved_session_without_rewriting_secrets(self):
+        saved = {"apiId": "123", "apiHash": "a" * 32, "session": "TEST_SESSION"}
+        self.controller._secrets = copy.deepcopy(saved)
+        self.controller._worker_error("Connection failed")
+        self.controller.vault.save.side_effect = OSError("Storage unavailable")
+        window = SettingsWindow(self.controller)
+        window.connect_telegram()
+        self.assertEqual(self.controller.bridge.commands[-1], {"command": "connect", **saved})
+        self.assertEqual(self.controller._secrets, saved)
+        self.controller.vault.save.assert_not_called()
+        self.assertEqual(self.controller.error_text, "")
+        self.assertEqual(window.api_id.text(), "")
+        self.assertEqual(window.api_hash.text(), "")
+        window.deleteLater()
+
+    def test_retry_after_ui_clears_hash_keeps_existing_api_pair(self):
+        window = SettingsWindow(self.controller)
+        window.api_id.setText("123")
+        window.api_hash.setText("a" * 32)
+        window.connect_telegram()
+        self.assertEqual(window.api_hash.text(), "")
+        self.controller._worker_error("Connection failed")
+        window.connect_telegram()
+        connects = [item for item in self.controller.bridge.commands if item["command"] == "connect"]
+        self.assertEqual(len(connects), 2)
+        self.assertEqual(connects[0], connects[1])
+        self.controller.vault.save.assert_called_once()
+        window.deleteLater()
+
+    def test_reconnect_never_mixes_partial_replacement_with_saved_credentials(self):
+        for api_id, api_hash, saved in [
+            ("456", "", {"apiId": "123", "apiHash": "a" * 32}),
+            ("", "b" * 32, {"apiId": "123", "apiHash": "a" * 32}),
+            ("", "", {}),
+            ("", "", {"apiId": "123"}),
+        ]:
+            with self.subTest(api_id=api_id, hash_entered=bool(api_hash), saved=bool(saved)):
+                self.controller._secrets = copy.deepcopy(saved)
+                self.controller.connect_telegram(api_id, api_hash)
+                self.assertEqual(self.controller._secrets, saved)
+                self.assertEqual(len(self.controller.bridge.commands), 1)
+        self.controller.vault.save.assert_not_called()
+
+    def test_registration_repair_reports_failure_without_changing_filter_or_ai_settings(self):
+        original = copy.deepcopy(self.controller.config)
+        self.controller.notifications.repair.return_value = False
+        self.controller.notifications.error = "Не удалось зарегистрировать TGFocus"
+        self.controller.repair_notifications()
+        self.assertEqual(self.controller.config, original)
+        self.assertEqual(self.controller.error_text, "Не удалось зарегистрировать TGFocus")
+        self.controller.notifications.repair.return_value = True
+        self.controller.repair_notifications()
+        self.assertEqual(self.controller.error_text, "")
+        self.controller.error_text = "Ошибка соединения Telegram"
+        self.controller.repair_notifications()
+        self.assertEqual(self.controller.error_text, "Ошибка соединения Telegram")
+
+    def test_test_notification_preserves_safe_native_error_and_clears_it_after_success(self):
+        self.controller.notifications.show.return_value = False
+        self.controller.notifications.error = "Не удалось прочитать разрешения (код Windows 0x80070005)."
+        self.controller.test_notification()
+        self.assertEqual(self.controller.error_text, self.controller.notifications.error)
+        self.controller.notifications.show.return_value = True
+        self.controller.test_notification()
+        self.assertEqual(self.controller.error_text, "")
+
+    def test_native_notification_failures_are_queued_and_old_generation_is_ignored(self):
+        self.controller.notifications.generation = 3
+        self.controller._notification_error.emit(2, "Old failure")
+        self.application.processEvents()
+        self.assertEqual(self.controller.error_text, "")
+        thread = threading.Thread(target=lambda: self.controller._notification_error.emit(3, "Failure 0x80070005"))
+        thread.start()
+        thread.join(timeout=2)
+        self.assertEqual(self.controller.error_text, "")
+        self.application.processEvents()
+        self.assertEqual(self.controller.error_text, "Failure 0x80070005")
+        self.controller.shutdown()
+        self.controller._notification_error.emit(3, "Late failure")
+        self.application.processEvents()
+        self.assertEqual(self.controller.error_text, "Failure 0x80070005")
+
+    def test_focus_is_checked_again_before_delivering_cached_allowed_message(self):
+        self.controller.dnd.read.return_value = (True, "DND on")
+        self.controller.update_config({"enabled": True, "windowsFocusAutomation": True})
+        self.controller.dnd.read.return_value = (False, "DND ended")
+        self.controller.receive({"type": "message", "allowed": True, "text": "late result"})
+        self.controller.notifications.show.assert_not_called()
+        self.assertFalse(self.controller.effective_filter_enabled)
+        self.assertFalse(self.controller.bridge.commands[-1]["config"]["processingEnabled"])
+
+    def test_native_callback_updates_worker_only_on_gui_thread_and_respects_manual_off(self):
+        self.controller.dnd.read.return_value = (False, "DND off")
+        self.controller.update_config({"enabled": True, "windowsFocusAutomation": True})
+        self.controller.dnd.read.return_value = (True, "DND on")
+        self.controller.dnd.read.reset_mock()
+        thread = threading.Thread(target=self.controller._dnd_dirty.emit)
+        thread.start()
+        thread.join(timeout=2)
+        self.controller.dnd.read.assert_not_called()
+        self.application.processEvents()
+        self.assertTrue(self.controller.effective_filter_enabled)
+        self.assertTrue(self.controller.bridge.commands[-1]["config"]["processingEnabled"])
+        self.controller.set_filter_enabled(False)
+        self.controller.dnd.read.reset_mock()
+        self.controller._dnd_dirty.emit()
+        self.application.processEvents()
+        self.controller.dnd.read.assert_not_called()
+        self.assertFalse(self.controller.effective_filter_enabled)
+
+    def test_resume_refreshes_state_and_shutdown_ignores_queued_wakeups(self):
+        self.controller.dnd.read.return_value = (False, "DND off")
+        self.controller.update_config({"enabled": True, "windowsFocusAutomation": True})
+        self.controller.dnd.read.return_value = (True, "DND on after resume")
+        self.controller._resume_filter.wake()
+        self.application.processEvents()
+        self.assertTrue(self.controller.effective_filter_enabled)
+        self.controller._dnd_dirty.emit()
+        self.controller.shutdown()
+        self.controller.dnd.read.reset_mock()
+        self.application.processEvents()
+        self.controller.dnd.read.assert_not_called()
+
+    def test_ai_failure_is_silent_and_click_opens_settings(self):
+        self.controller.update_config({"aiEnabled": True})
+        pages = []
+        self.controller.settings_requested.connect(pages.append)
+        for _ in range(3):
+            self.controller.receive({"type": "aiStatus", "connection": "failed", "message": "Fixed error"})
+        self.controller.notifications.show.assert_called_once()
+        request = self.controller.notifications.show.call_args
+        self.assertTrue(request.kwargs["silent"])
+        request.kwargs["on_activate"]()
+        self.assertEqual(pages, ["ai"])
+        self.controller.update_config({"aiEnabled": False})
+        self.controller.receive({"type": "aiStatus", "connection": "failed", "message": "late"})
+        self.controller.notifications.show.assert_called_once()
+
+    def test_preview_sound_and_history_do_not_retain_message_body(self):
+        self.controller.update_config({"enabled": True, "showPreview": False, "playSound": False})
+        self.controller.receive({"type": "message", "allowed": True, "title": "Chat", "text": "PRIVATE_BODY"})
+        request = self.controller.notifications.show.call_args
+        self.assertNotIn("PRIVATE_BODY", str(request))
+        self.assertTrue(request.kwargs["silent"])
+        self.assertNotIn("PRIVATE_BODY", str(self.controller.activities))
+        for _ in range(70):
+            self.controller.receive({"type": "message", "allowed": False, "title": "Chat"})
+        self.assertEqual(len(self.controller.activities), 50)
+
+    def test_window_hides_reopens_and_clears_ephemeral_secrets(self):
+        window = SettingsWindow(self.controller)
+        self.addCleanup(window.deleteLater)
+        window.show_page("connection")
+        window.api_hash.setText("TEST_HASH")
+        window.code.setText("12345")
+        window.password.setText("TEST_PASSWORD")
+        window.ai_key.setText("TEST_AI")
+        self.assertTrue(window.isVisible())
+        window.close()
+        self.assertFalse(window.isVisible())
+        self.assertTrue(all(not field.text() for field in (window.api_hash, window.code, window.password, window.ai_key)))
+        window.show_page("ai")
+        self.assertTrue(window.isVisible())
+        window.close()
+
+
+if __name__ == "__main__": unittest.main()

@@ -62,4 +62,4 @@ def decide(message, config):
             if match:
                 return Decision(True, "Исключение + слово: " + match)
             return Decision(False, "В этом чате нужны ключевые слова")
-    return Decision(False, "Группа или канал заглушены")
+    return Decision(False, "Группа или канал не разрешены правилами TGFocus")
