@@ -8,7 +8,7 @@ Get-Content -LiteralPath (Join-Path $ReportDirectory 'custom/files.json') -Raw |
 Get-Content -LiteralPath (Join-Path $ReportDirectory 'none/files.json') -Raw |
     ConvertFrom-Json | ForEach-Object { $none[$_.path] = $_.sha256 }
 $paths = @(@($custom.Keys) + @($none.Keys) | Sort-Object -Unique)
-$executables = @('TGFocus.exe', 'helper\focus-worker.exe')
+$executables = @('TGFocus-Windows-x64\TGFocus.exe', 'TGFocus-Windows-x64\helper\focus-worker.exe')
 $differences = @($paths | Where-Object { $custom[$_] -ne $none[$_] })
 $unexpected = @($differences | Where-Object { $_ -notin $executables })
 $report = [ordered]@{
