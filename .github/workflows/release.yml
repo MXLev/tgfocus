@@ -28,7 +28,7 @@ jobs:
         run: bash source/package_dmg.sh
       - name: Test installation from DMG
         run: bash source/tests/smoke_dmg.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: TGFocus-unsigned-arm64
           path: |
