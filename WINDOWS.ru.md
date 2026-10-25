@@ -29,6 +29,8 @@
 
 Отчёт `TGFocus-Windows-security-report` содержит версии движка/баз, вывод сканера, его справку, код завершения и список файлов. Успешный результат означает только отсутствие обнаружений этой проверкой Defender; он не отменяет независимый вердикт Chrome и не гарантирует безопасность. Google различает [опасные и малоизвестные загрузки](https://github.com/chromium/chromium/blob/main/components/download/public/common/download_danger_type.h); доступные способы пересмотра описаны в [официальном FAQ Chromium](https://github.com/chromium/chromium/blob/main/docs/security/faq.md#how-can-i-appeal-a-safe-browsing-warning).
 
+Для сравнения в **Run workflow** доступен флаг `compare_icons` (поле `scan_run_id` оставь пустым). Один Windows-сервер последовательно собирает и проверяет два пакета из одних исходников и в одном окружении: `TGFocus-Windows-icons-custom` с ICO внутри обоих EXE и `TGFocus-Windows-icons-none` без иконок внутри EXE. Отдельные PNG/ICO для окна и уведомлений входят в оба пакета. Это диагностические варианты, а не способ обойти защиту или подтверждение ложного срабатывания. Для локальной сборки второго варианта есть `python source/Windows/build.py --without-exe-icons`. При проверке в Chrome сохрани вердикт Safe Browsing для каждого архива; перед запуском другого варианта заверши предыдущий через трей и распакуй пакеты в разные папки.
+
 ## Подключить Telegram
 
 1. Получи собственные **API ID** и **API Hash** на https://my.telegram.org/apps . Не отправляй их автору или в issue.

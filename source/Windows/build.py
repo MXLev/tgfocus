@@ -52,6 +52,8 @@ def collect_licenses(destination):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env", type=Path, help="Reuse a Windows Python build venv")
+    parser.add_argument("--without-exe-icons", action="store_true",
+                        help="Diagnostic build: omit EXE icons, retaining window and toast assets")
     parser.add_argument("--collect-licenses", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.collect_licenses:
@@ -71,13 +73,14 @@ def main():
     run(python, "-m", "pip", "install", "--disable-pip-version-check", "-r", WINDOWS / "requirements.txt")
     assets = BUILD / "assets"
     run(python, WINDOWS / "icons.py", assets)
+    executable_icon = "NONE" if args.without_exe_icons else assets / "app.ico"
     # macOS app replacement tests use fcntl/ps and run in existing Linux/mac CI.
     for pattern in ("test_filter.py", "test_notification_settings.py", "test_ai_filter.py", "test_worker_ipc.py", "test_windows*.py"):
         run(python, "-m", "unittest", "discover", "-s", SOURCE / "tests", "-p", pattern, "-v")
 
     worker_dist = BUILD / "worker-dist"
     run(python, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir", "--console",
-        "--name", "focus-worker", "--icon", assets / "app.ico",
+        "--name", "focus-worker", "--icon", executable_icon,
         "--distpath", worker_dist, "--workpath", BUILD / "worker-work",
         "--specpath", BUILD, "--paths", SOURCE / "Helper", SOURCE / "Helper/worker.py")
     worker = worker_dist / "focus-worker"
@@ -87,7 +90,7 @@ def main():
     run(python, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir", "--windowed",
         "--name", "TGFocus", "--distpath", app_dist, "--workpath", BUILD / "app-work",
         "--specpath", BUILD, "--paths", WINDOWS,
-        "--icon", assets / "app.ico", "--add-data", str(assets) + os.pathsep + "assets",
+        "--icon", executable_icon, "--add-data", str(assets) + os.pathsep + "assets",
         "--additional-hooks-dir", WINDOWS / "hooks",
         "--collect-all", "windows_toasts", "--collect-all", "winrt",
         "--hidden-import", "PySide6.support.deprecated",
@@ -127,7 +130,8 @@ def main():
         if library.name.lower() not in {"qt6core.dll", "qt6gui.dll", "qt6widgets.dll", "qt6network.dll"}:
             raise RuntimeError(f"Unexpected Qt module in portable package: {library.name}")
     # Exercise exactly the folder later placed in the ZIP; no user account/API key.
-    run(python, SOURCE / "tests/smoke_windows.py", package / "TGFocus.exe")
+    smoke_options = ["--without-exe-icons"] if args.without_exe_icons else []
+    run(python, SOURCE / "tests/smoke_windows.py", package / "TGFocus.exe", *smoke_options)
 
     output = ROOT / "dist"
     output.mkdir(exist_ok=True)

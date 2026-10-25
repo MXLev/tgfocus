@@ -84,7 +84,7 @@ def write_assets(directory):
     (directory / "app.ico").write_bytes(struct.pack("<HHH", 0, 1, len(SIZES)) + b"".join(entries) + b"".join(payloads))
 
 
-def verify_executable_icon(executable):
+def verify_executable_icon(executable, *, expected=True):
     """Verify final PE icon resources match our ICO, rather than a Python icon."""
     import ctypes
     source = asset_path("app.ico").read_bytes()
@@ -106,6 +106,11 @@ def verify_executable_icon(executable):
     if not module:
         raise RuntimeError("Cannot inspect executable icon resources")
     try:
+        if not expected:
+            if kernel.FindResourceW(module, ctypes.c_void_p(1), ctypes.c_void_p(14)):
+                raise RuntimeError("Diagnostic EXE unexpectedly contains an icon group")
+            return
+
         def resource(identifier, kind):
             handle = kernel.FindResourceW(module, ctypes.c_void_p(identifier), ctypes.c_void_p(kind))
             if not handle:

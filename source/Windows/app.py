@@ -63,12 +63,15 @@ def smoke_native(directory):
         raise RuntimeError("Portable EXE did not report unpackaged identity")
     embedded_icon = False
     if getattr(sys, "frozen", False):
-        verify_executable_icon(Path(sys.executable))
-        verify_executable_icon(Path(sys.executable).parent / "helper/focus-worker.exe")
+        icon_mode = os.environ.get("TELEGRAM_FOCUS_SMOKE_EXE_ICONS", "custom")
+        if icon_mode not in {"custom", "none"}:
+            raise RuntimeError("Invalid smoke EXE icon expectation")
+        embedded_icon = icon_mode == "custom"
+        verify_executable_icon(Path(sys.executable), expected=embedded_icon)
+        verify_executable_icon(Path(sys.executable).parent / "helper/focus-worker.exe", expected=embedded_icon)
         from PySide6.QtGui import QImage
         if application_icon().isNull() or QImage(str(asset_path("app.png"))).isNull():
             raise RuntimeError("Bundled app/notification icon did not load")
-        embedded_icon = True
     vault = CredentialVault(directory / "native-smoke")
     fake = {"apiId": "1", "apiHash": "TEST_HASH", "session": "TEST_SESSION",
             "aiKeys": {"openrouter": "TEST_KEY_NOT_REAL"}}
