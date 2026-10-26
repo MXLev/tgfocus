@@ -133,7 +133,7 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: TGFocus-Windows-test-x64
           path: security-input
@@ -164,11 +164,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: TGFocus-Windows-test-x64
           path: dist
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: TGFocus-Windows-security-report
           path: security-report
