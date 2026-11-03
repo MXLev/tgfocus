@@ -10,7 +10,7 @@ Python worker development works on Linux or macOS with Python 3.13:
 
 ```sh
 python3.13 -m venv .venv
-.venv/bin/python -m pip install Telethon==1.45.0 certifi==2026.10.19
+.venv/bin/python -m pip install Telethon==1.45.0 certifi==2026.10.23
 .venv/bin/python -m unittest discover -s source/tests -p 'test_*.py' -v
 ```
 
