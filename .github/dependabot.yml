@@ -4,7 +4,19 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      github-actions:
+        patterns: ["actions/*"]
   - package-ecosystem: pip
     directory: /source
     schedule:
       interval: weekly
+    groups:
+      windows-notifications:
+        patterns: ["winrt-*", "windows-toasts"]
+    ignore:
+      # Windows-Toasts 1.3.1 requires WinRT 3.x. Revisit when its upstream
+      # supports WinRT 4; keep compatible 3.x updates enabled.
+      # PEP 440 >=4 also covers the new projection epoch (4!10...).
+      - dependency-name: "winrt-*"
+        versions: [">=4"]
