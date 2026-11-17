@@ -259,6 +259,8 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
     async def test_auth_code_needs_password_then_session(self):
         from telethon.errors import SessionPasswordNeededError
         client = SimpleNamespace(
+            disconnected=asyncio.get_running_loop().create_future(),
+            disconnect=AsyncMock(),
             sign_in=AsyncMock(side_effect=[SessionPasswordNeededError(None), None]),
             session=SimpleNamespace(save=lambda: "FAKE_SESSION_FOR_TEST"),
             get_me=AsyncMock(return_value=SimpleNamespace(first_name="Тест", last_name=None)))
@@ -371,6 +373,7 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
             if outcome == "expired": raise asyncio.TimeoutError()
         qr = SimpleNamespace(url="tg://login?token=TEST_TOKEN", expires=datetime.now(timezone.utc) + timedelta(seconds=30), wait=wait)
         self.worker.client = SimpleNamespace(qr_login=AsyncMock(return_value=qr),
+            disconnected=asyncio.get_running_loop().create_future(), disconnect=AsyncMock(),
             get_me=AsyncMock(return_value=SimpleNamespace(first_name="Тест", last_name=None)),
             session=SimpleNamespace(save=lambda: "FAKE_SESSION"))
         await self.worker.command(dict(command="qr"))

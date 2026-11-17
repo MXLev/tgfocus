@@ -33,6 +33,8 @@ class Worker:
         self.current_user_id = None
         self.current_usernames = set()
         self.notify_cache = OrderedDict()
+        self.notify_inflight = {}
+        self.notify_slots = asyncio.Semaphore(8)
         self.notify_generation = 0
         self.config_generation = 0
         self.ai = AIClassifier()
@@ -47,6 +49,8 @@ class Worker:
 
     async def close_client(self):
         self.config_generation += 1
+        client, self.client = self.client, None
+        await self.stop_monitor()
         await self.cancel_qr()
         if self.ai_test_task:
             self.ai_test_task.cancel()
@@ -54,28 +58,36 @@ class Worker:
         self.current_user_id = None
         self.current_usernames = set()
         self.invalidate_notification_settings()
+        pending = list(self.notify_inflight.values())
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        self.notify_inflight.clear()
+        self.seen.clear()
         self.phone_hash = None
         self.code_next_type = None
         self.resend_after = 0
-        if self.monitor_task:
-            self.monitor_task.cancel()
-            self.monitor_task = None
-        if self.client:
-            await self.client.disconnect()
-            self.client = None
+        if client:
+            await client.disconnect()
+
+    async def stop_monitor(self):
+        task, self.monitor_task = self.monitor_task, None
+        if task and task is not asyncio.current_task():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     async def configure(self, request):
-        from telethon import TelegramClient, events
+        from telethon import TelegramClient, events, errors
         from telethon.tl.types import UpdateNotifySettings
-        from telethon.sessions import StringSession
+        from session_cache import BoundedStringSession
         await self.close_client()
         api_id = int(request.get("apiId", "0"))
         api_hash = request.get("apiHash", "").strip()
-        if api_id <= 0 or len(api_hash) != 32 or any(c not in "0123456789abcdefABCDEF" for c in api_hash):
+        if not 0 < api_id < 2**31 or len(api_hash) != 32 or any(c not in "0123456789abcdefABCDEF" for c in api_hash):
             emit("error", message="Проверь API ID и API Hash с my.telegram.org.")
             return
         self.client = TelegramClient(
-            StringSession(request.get("session", "")), api_id, api_hash,
+            BoundedStringSession(request.get("session", "")), api_id, api_hash,
             device_model="TGFocus for Windows" if sys.platform == "win32" else "Telegram Focus for Mac",
             system_version="Windows" if sys.platform == "win32" else "macOS",
             app_version="1.5.0", connection_retries=3, request_retries=2,
@@ -84,11 +96,29 @@ class Worker:
         self.client.add_event_handler(self.on_message, events.NewMessage(incoming=True))
         self.client.add_event_handler(self.on_notify_settings, events.Raw(types=UpdateNotifySettings))
         emit("state", state="connecting", message="Подключаюсь к Telegram…")
-        await asyncio.wait_for(self.client.connect(), timeout=25)
-        if await self.client.is_user_authorized():
-            await self.authorized()
+        try:
+            me = await self.connect_user(self.client)
+        except (OSError, asyncio.TimeoutError, errors.ServerError, errors.FloodWaitError) as error:
+            # Startup can precede Wi-Fi/VPN. Keep the stored session and retry
+            # without forcing the user to re-enter credentials or restart.
+            delay = max(2, getattr(error, "seconds", 0))
+            self.monitor_task = asyncio.create_task(self.monitor(
+                self.client, reconnect=True, require_authorized=bool(request.get("session")), delay=delay))
+            return
+        if me is not None:
+            await self.authorized(me)
+        elif request.get("session"):
+            await self.close_client()
+            emit("invalidSession")
         else:
             emit("state", state="phone", message="Выбери вход по QR-коду или по номеру телефона.")
+
+    @staticmethod
+    async def connect_user(client):
+        await asyncio.wait_for(client.connect(), timeout=25)
+        # is_user_authorized() caches True and masks some RPC errors. A fresh
+        # get_me() distinguishes a recovered session from a revoked one.
+        return await asyncio.wait_for(client.get_me(), timeout=10)
 
     def code_sent(self, sent):
         """Use the actual server-selected delivery type, not a guessed destination."""
@@ -144,27 +174,87 @@ class Worker:
         emit("state", state="qr", message="В Telegram на телефоне: Настройки → Устройства → Подключить устройство. Отсканируй QR и подтверди вход.")
         emit("qr", url=qr.url, expiresAt=qr.expires.timestamp())
 
-    async def authorized(self):
-        me = await self.client.get_me()
+    async def authorized(self, me=None):
+        if me is None:
+            me = await asyncio.wait_for(self.client.get_me(), timeout=10)
+        if me is None:
+            await self.close_client()
+            emit("invalidSession")
+            return
         self.current_user_id = getattr(me, "id", None)
         self.current_usernames = {name.casefold() for name in
             [getattr(me, "username", None)] + [getattr(item, "username", None)
                 for item in (getattr(me, "usernames", None) or []) if getattr(item, "active", False)] if name}
         emit("session", session=self.client.session.save())
         emit("state", state="connected", message="На связи", name=" ".join(filter(None, [me.first_name, me.last_name])))
-        if self.monitor_task:
-            self.monitor_task.cancel()
-        self.monitor_task = asyncio.create_task(self.monitor())
+        if self.monitor_task is None or self.monitor_task.done():
+            self.monitor_task = asyncio.create_task(self.monitor(self.client))
 
-    async def monitor(self):
-        was_connected = True
-        while True:
-            await asyncio.sleep(5)
-            connected = self.client.is_connected() if self.client else False
-            if connected != was_connected:
-                emit("state", state="connected" if connected else "reconnecting",
-                     message="На связи" if connected else "Нет соединения. Telegram переподключается…")
-                was_connected = connected
+    async def monitor(self, client, *, reconnect=False, require_authorized=True, delay=2):
+        from telethon import errors
+        invalid_session = (errors.UnauthorizedError, errors.AuthKeyError, errors.AuthKeyNotFound)
+        transient = (OSError, asyncio.TimeoutError, errors.ServerError, errors.FloodWaitError)
+        while self.client is client and not self.closing:
+            try:
+                if not reconnect:
+                    # Cancellation of this shielded public future leaves the
+                    # connection usable for logout. run_until_disconnected()
+                    # would disconnect the client in its cancellation finally.
+                    await client.disconnected
+                    # Telethon 1.45 reports update-loop failures separately from
+                    # transport failures; neither may look like endless retry.
+                    error = getattr(client, "_updates_error", None)
+                    if error is not None:
+                        raise error
+                reconnect = True
+                self.config_generation += 1
+                self.invalidate_notification_settings()
+                emit("state", state="reconnecting",
+                     message=f"Нет соединения. Следующая попытка через {delay} сек.; можно переподключиться вручную.")
+                await asyncio.sleep(delay)
+                await client.disconnect()
+                me = await self.connect_user(client)
+                if self.client is not client or self.closing:
+                    return
+                if me is None:
+                    if require_authorized:
+                        await self.end_monitored_connection(client, "invalidSession")
+                    else:
+                        emit("state", state="phone", message="Выбери вход по QR-коду или по номеру телефона.")
+                    return
+                await self.authorized(me)
+                reconnect, require_authorized, delay = False, True, 2
+            except invalid_session:
+                await self.end_monitored_connection(client, "invalidSession")
+                return
+            except transient as error:
+                reconnect = True
+                delay = max(min(delay * 2, 60), getattr(error, "seconds", 0))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                await self.end_monitored_connection(client, "error",
+                    message="Telegram остановил соединение. Нажми «Переподключить»; данные входа сохранены.")
+                return
+
+    async def end_monitored_connection(self, client, event, **fields):
+        # Keep ownership until cleanup finishes. A simultaneous manual connect
+        # can cancel this task and clean the old client before replacing it;
+        # a late invalidSession must never erase a new account's credentials.
+        if self.client is not client:
+            return
+        self.config_generation += 1
+        self.invalidate_notification_settings()
+        try:
+            await asyncio.wait_for(client.disconnect(), timeout=5)
+        except Exception:
+            pass
+        if self.client is client:
+            self.client = None
+            self.current_user_id = None
+            self.current_usernames = set()
+            self.seen.clear()
+            emit(event, **fields)
 
     def invalidate_notification_settings(self):
         self.notify_cache.clear()
@@ -174,16 +264,34 @@ class Worker:
         self.invalidate_notification_settings()
 
     async def notification_settings(self, key, peer):
-        from telethon.tl.functions.account import GetNotifySettingsRequest
         cached = self.notify_cache.get(key)
         if cached and time.monotonic() < cached[0]:
+            self.notify_cache.move_to_end(key)
             return cached[1]
         generation = self.notify_generation
+        pending_key = (generation, key)
+        task = self.notify_inflight.get(pending_key)
+        if task is None:
+            # Bound both active RPCs and waiting distinct peers. Messages for
+            # the same peer share one request, including failures/timeouts.
+            if len(self.notify_inflight) >= 64:
+                return None
+            task = asyncio.create_task(self.fetch_notification_settings(key, peer, generation, self.client))
+            self.notify_inflight[pending_key] = task
+        return await asyncio.shield(task)
+
+    async def fetch_notification_settings(self, key, peer, generation, client):
+        from telethon.tl.functions.account import GetNotifySettingsRequest
+        async def fetch():
+            async with self.notify_slots:
+                return await client(GetNotifySettingsRequest(peer))
         try:
-            settings = await asyncio.wait_for(self.client(GetNotifySettingsRequest(peer)), timeout=5)
+            settings = await asyncio.wait_for(fetch(), timeout=5)
         except Exception:
             settings = None
-        if generation != self.notify_generation:
+        finally:
+            self.notify_inflight.pop((generation, key), None)
+        if generation != self.notify_generation or client is not self.client:
             return None  # A live settings update invalidated an in-flight response.
         self.notify_cache[key] = (time.monotonic() + (30 if settings is not None else 5), settings)
         self.notify_cache.move_to_end(key)
@@ -412,11 +520,20 @@ class Worker:
                 result = decide(data["message"], self.config)
                 emit("simulation", allowed=result.allowed, reason=result.reason)
             elif action == "logout":
-                if not self.client or await self.client.log_out() is not True:
-                    emit("error", message="Не удалось отозвать сессию в Telegram. Данные входа сохранены; проверь соединение и повтори выход или заверши сеанс в Telegram → Устройства.", recoverable=True)
-                    return True
-                await self.close_client()
-                emit("loggedOut")
+                # A background reconnect must not re-authorize while logout is
+                # revoking this same session. Failed logout resumes monitoring.
+                monitored = self.monitor_task is not None and not self.monitor_task.done()
+                await self.stop_monitor()
+                try:
+                    if not self.client or await asyncio.wait_for(self.client.log_out(), timeout=15) is not True:
+                        emit("error", message="Не удалось отозвать сессию в Telegram. Данные входа сохранены; проверь соединение и повтори выход или заверши сеанс в Telegram → Устройства.", recoverable=True)
+                        return True
+                    await self.close_client()
+                    emit("loggedOut")
+                finally:
+                    if monitored and self.client is not None and not self.closing:
+                        self.monitor_task = asyncio.create_task(self.monitor(
+                            self.client, reconnect=not self.client.is_connected()))
             elif action == "disconnect":
                 await self.close_client()
                 emit("state", state="disconnected", message="Отключено")
@@ -435,7 +552,7 @@ class Worker:
             emit("error", message="Неверный пароль двухэтапной аутентификации.", recoverable=True)
         except errors.PhoneNumberInvalidError:
             emit("error", message="Неверный номер телефона. Используй международный формат: +7…", recoverable=True)
-        except (errors.AuthKeyUnregisteredError, errors.SessionRevokedError):
+        except (errors.UnauthorizedError, errors.AuthKeyError, errors.AuthKeyNotFound):
             await self.close_client()
             emit("invalidSession")
         except errors.ApiIdInvalidError:
@@ -489,6 +606,7 @@ class Worker:
                     except asyncio.QueueFull:
                         emit("error", message="Слишком много команд. Дождись завершения текущей операции.", recoverable=True)
         finally:
+            self.closing = True
             command_task.cancel()
             await asyncio.gather(command_task, return_exceptions=True)
             await self.close_client()

@@ -80,7 +80,8 @@ def main():
     write_version_info(app_version, "TGFocus.exe", "TGFocus Telegram notification filter")
     write_version_info(worker_version, "focus-worker.exe", "TGFocus Telegram worker")
     # macOS app replacement tests use fcntl/ps and run in existing Linux/mac CI.
-    for pattern in ("test_filter.py", "test_notification_settings.py", "test_ai_filter.py", "test_worker_ipc.py", "test_windows*.py"):
+    for pattern in ("test_filter.py", "test_connection_recovery.py", "test_session_cache.py",
+                    "test_notification_settings.py", "test_ai_filter.py", "test_worker_ipc.py", "test_windows*.py"):
         run(python, "-m", "unittest", "discover", "-s", SOURCE / "tests", "-p", pattern, "-v")
 
     worker_dist = BUILD / "worker-dist"

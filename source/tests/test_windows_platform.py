@@ -59,6 +59,18 @@ class ConfigTests(unittest.TestCase):
             self.store.load()
         self.assertNotIn("SECRET", str(error.exception))
         self.assertEqual(self.store.path.read_bytes(), original)
+        with self.assertRaises(StorageError):
+            self.store.save(DEFAULT_CONFIG)
+        self.assertEqual(self.store.path.read_bytes(), original)
+
+    def test_repaired_config_can_be_loaded_and_saved_again(self):
+        self.store.path.write_bytes(b'{broken')
+        with self.assertRaises(StorageError):
+            self.store.load()
+        self.store.path.write_text(json.dumps(dict(DEFAULT_CONFIG, people=[dict(id='42', name='VIP')])))
+        config = self.store.load()
+        self.store.save(dict(config, enabled=True))
+        self.assertEqual(self.store.load()['people'], [dict(id='42', name='VIP')])
 
     def test_replace_failure_keeps_existing_settings(self):
         self.store.save(DEFAULT_CONFIG)
