@@ -1,7 +1,7 @@
 """One product version for the Windows UI, both PE files and release tags."""
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 FILE_VERSION = tuple(map(int, VERSION.split("."))) + (0,)
 PRODUCT_NAME = "TGFocus"
 

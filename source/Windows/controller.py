@@ -67,7 +67,7 @@ class Controller(QObject):
             try:
                 self.config = self.config_store.load()
             except Exception:
-                self.error_text = "Не удалось прочитать настройки. Фильтр выключен; исходный файл не перезаписан."
+                self.error_text = "Не удалось прочитать настройки. Фильтр выключен; исходный файл защищён от перезаписи. Восстанови rules.json или сохрани его копию и убери из папки данных, затем перезапусти TGFocus."
             try:
                 self._secrets = self.vault.load()
             except Exception:
@@ -116,7 +116,7 @@ class Controller(QObject):
 
     def _mark_startup_offer_shown(self):
         self.config["startupOfferShown"] = True
-        if not self._smoke:
+        if not self._smoke and not self.config_store.load_failed:
             try:
                 self.config_store.save(self.config)
             except Exception:
@@ -163,7 +163,8 @@ class Controller(QObject):
             try:
                 self.config_store.save(self.config)
             except Exception:
-                self.error_text = "Настройки работают до перезапуска, но не сохранены на диск."
+                self.error_text = ("Исходные настройки защищены после ошибки чтения. Изменения работают до перезапуска; восстанови rules.json или сохрани его копию и убери из папки данных."
+                                   if self.config_store.load_failed else "Настройки работают до перезапуска, но не сохранены на диск.")
         self._configure_focus()
         self._sync_config()  # Privacy changes apply even when writing preferences failed.
         self.changed.emit()

@@ -681,7 +681,7 @@ class SettingsWindow(QMainWindow):
         self.password_row.setVisible(controller.state == "password")
         self.qr_label.setVisible(controller.state == "qr")
         self.qr_button.setEnabled(controller.state != "password")
-        self.connect_button.setEnabled(controller.state not in {"connecting", "reconnecting"})
+        self.connect_button.setEnabled(controller.state != "connecting")
         if controller.state != "qr":
             self.render_qr("")
         elif controller.qr_url:

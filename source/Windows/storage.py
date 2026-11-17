@@ -110,20 +110,28 @@ def _read_bounded(path, limit):
 class ConfigStore:
     def __init__(self, directory):
         self.path = Path(directory) / "rules.json"
+        self.load_failed = False
 
     def load(self):
         try:
             raw = _read_bounded(self.path, _MAX_CONFIG_BYTES)
         except FileNotFoundError:
+            self.load_failed = False
             return copy.deepcopy(DEFAULT_CONFIG)
         except Exception:
+            self.load_failed = True
             raise StorageError("Не удалось прочитать настройки TGFocus.") from None
         try:
-            return normalize_config(json.loads(raw))
+            result = normalize_config(json.loads(raw))
         except Exception:
+            self.load_failed = True
             raise StorageError("Не удалось прочитать настройки TGFocus. Исходный файл не изменён.") from None
+        self.load_failed = False
+        return result
 
     def save(self, config):
+        if self.load_failed:
+            raise StorageError("Исходный файл настроек защищён от перезаписи после ошибки чтения. Восстанови его и перезапусти TGFocus.")
         normalized = normalize_config(config)
         try:
             data = json.dumps(normalized, ensure_ascii=False).encode("utf-8")

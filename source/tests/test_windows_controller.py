@@ -73,6 +73,27 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(len(self.controller.bridge.commands), commands_before)
         self.assertNotIn("startupOfferShown", self.controller.bridge.commands[-1]["config"])
 
+    def test_failed_config_load_survives_login_offer_and_runtime_edits(self):
+        original = b'{"people":[{"id":"42","name":"VIP"}],broken'
+        path = Path(self.temporary.name) / 'rules.json'
+        path.write_bytes(original)
+        controller = Controller(Path(self.temporary.name))
+        self.addCleanup(controller.shutdown)
+        controller.startup.available = True
+        controller.receive(dict(type='ready'))
+        controller.receive(dict(type='state', state='connected'))
+        self.assertTrue(controller.config['startupOfferShown'])
+        self.assertEqual(path.read_bytes(), original)
+        controller.update_config(dict(enabled=True))
+        self.assertEqual(path.read_bytes(), original)
+        self.assertTrue(controller.bridge.commands[-1]['config']['enabled'])
+
+    def test_manual_reconnect_is_available_while_automatic_retries_wait(self):
+        window = SettingsWindow(self.controller)
+        self.addCleanup(window.deleteLater)
+        self.controller.receive(dict(type='state', state='reconnecting'))
+        self.assertTrue(window.connect_button.isEnabled())
+
     def test_startup_offer_is_once_after_login_and_never_enables_on_its_own(self):
         self.controller.startup.available = True
         requests = []

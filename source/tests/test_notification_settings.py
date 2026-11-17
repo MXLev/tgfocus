@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
@@ -159,3 +160,95 @@ class NotificationSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.worker.client.return_value = types.PeerNotifySettings(mute_until=self.epoch)
         self.assertFalse(await self.worker.is_chat_muted(self.event, 'group'))
         self.assertIsInstance(self.worker.client.call_args.args[0].peer, types.InputNotifyPeer)
+
+    async def test_burst_shares_one_inflight_rpc(self):
+        started, release = asyncio.Event(), asyncio.Event()
+        async def fetch(_request):
+            started.set()
+            await release.wait()
+            return types.PeerNotifySettings(mute_until=self.epoch)
+        self.worker.client.side_effect = fetch
+        tasks = [asyncio.create_task(self.worker.is_chat_muted(self.event, 'group')) for _ in range(50)]
+        await asyncio.wait_for(started.wait(), timeout=1)
+        self.worker.client.assert_awaited_once()
+        release.set()
+        self.assertEqual(await asyncio.gather(*tasks), [False] * 50)
+        self.assertEqual(self.worker.notify_inflight, {})
+
+    async def test_one_cancelled_message_does_not_cancel_shared_settings(self):
+        started, release = asyncio.Event(), asyncio.Event()
+        async def fetch(_request):
+            started.set()
+            await release.wait()
+            return types.PeerNotifySettings(mute_until=self.future)
+        self.worker.client.side_effect = fetch
+        first = asyncio.create_task(self.worker.is_chat_muted(self.event, 'group'))
+        second = asyncio.create_task(self.worker.is_chat_muted(self.event, 'group'))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+        release.set()
+        self.assertTrue(await second)
+        self.worker.client.assert_awaited_once()
+
+    async def test_new_generation_does_not_join_stale_inflight_response(self):
+        gates = [asyncio.Event(), asyncio.Event()]
+        started = [asyncio.Event(), asyncio.Event()]
+        calls = 0
+        async def fetch(_request):
+            nonlocal calls
+            index = calls
+            calls += 1
+            started[index].set()
+            await gates[index].wait()
+            return types.PeerNotifySettings(mute_until=self.epoch if index == 0 else self.future)
+        self.worker.client.side_effect = fetch
+        old = asyncio.create_task(self.worker.is_chat_muted(self.event, 'group'))
+        await asyncio.wait_for(started[0].wait(), timeout=1)
+        self.worker.invalidate_notification_settings()
+        new = asyncio.create_task(self.worker.is_chat_muted(self.event, 'group'))
+        await asyncio.wait_for(started[1].wait(), timeout=1)
+        gates[1].set()
+        self.assertTrue(await new)
+        gates[0].set()
+        self.assertIsNone(await old)
+        self.assertTrue(await self.worker.is_chat_muted(self.event, 'group'))
+        self.assertEqual(self.worker.client.await_count, 2)
+
+    async def test_active_and_waiting_distinct_requests_are_bounded(self):
+        release, saturated = asyncio.Event(), asyncio.Event()
+        active = peak = 0
+        async def fetch(_request):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            if active == 8:
+                saturated.set()
+            try:
+                await release.wait()
+                return types.PeerNotifySettings(mute_until=self.epoch)
+            finally:
+                active -= 1
+        self.worker.client.side_effect = fetch
+        tasks = [asyncio.create_task(self.worker.notification_settings(('peer', i), types.InputNotifyUsers()))
+                 for i in range(100)]
+        await asyncio.wait_for(saturated.wait(), timeout=1)
+        self.assertLessEqual(len(self.worker.notify_inflight), 64)
+        release.set()
+        results = await asyncio.gather(*tasks)
+        self.assertLessEqual(peak, 8)
+        self.assertEqual(sum(result is not None for result in results), 64)
+        self.assertEqual(self.worker.notify_inflight, {})
+
+    async def test_disconnect_cancels_pending_rpc_and_prevents_cache_repopulation(self):
+        started = asyncio.Event()
+        async def fetch(_request):
+            started.set()
+            await asyncio.Event().wait()
+        self.worker.client.side_effect = fetch
+        task = asyncio.create_task(self.worker.is_chat_muted(self.event, 'group'))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await self.worker.close_client()
+        await asyncio.gather(task, return_exceptions=True)
+        self.assertFalse(self.worker.notify_inflight)
+        self.assertFalse(self.worker.notify_cache)

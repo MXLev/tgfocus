@@ -1,6 +1,6 @@
 # Необязательный ИИ-фильтр
 
-Доступен в [Windows v0.1.0](https://github.com/MXLev/tgfocus/releases/tag/windows-v0.1.0). Для macOS подготовлен в исходниках следующего выпуска; опубликованный DMG v1.4.0 ИИ не содержит.
+Доступен в Windows начиная с v0.1.0 и в предварительном [macOS-выпуске v1.5.0](https://github.com/MXLev/tgfocus/releases/tag/v1.5.0). Новая Windows-сборка — [v0.1.1](https://github.com/MXLev/tgfocus/releases/tag/windows-v0.1.1). Предыдущий DMG v1.4.0 ИИ не содержит.
 
 Публичное описание данных и ссылки на политики Telegram, OpenRouter/конечного провайдера и DeepSeek: [PRIVACY.md](PRIVACY.md). На Windows ключи хранятся через DPAPI текущего пользователя; упоминания Связки ключей ниже относятся к macOS.
 

@@ -151,6 +151,37 @@ struct Credentials: Codable {
     var session = ""
 }
 
+final class ConfigFileStore {
+    let url: URL
+    private(set) var loadFailed = false
+
+    init(url: URL) { self.url = url }
+
+    func load() throws -> FilterConfig {
+        do {
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                loadFailed = false
+                return FilterConfig()
+            }
+            let config = try JSONDecoder().decode(FilterConfig.self, from: Data(contentsOf: url))
+            loadFailed = false
+            return config
+        } catch {
+            loadFailed = true
+            throw error
+        }
+    }
+
+    func save(_ config: FilterConfig) throws {
+        guard !loadFailed else {
+            throw NSError(domain: "TGFocus.Config", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                "Исходный файл настроек защищён от перезаписи после ошибки чтения. Восстанови rules.json или сохрани его копию и убери из папки данных, затем перезапусти TGFocus."])
+        }
+        try JSONEncoder().encode(config).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+}
+
 enum QRRenderer {
     static func image(for url: String) -> NSImage? {
         guard url.hasPrefix("tg://login?token=") else { return nil }
@@ -345,7 +376,8 @@ final class AppModel: ObservableObject {
     private var input: FileHandle?
     private var outputPipe: Pipe?
     private var shouldReconnect = false
-    private var configURL: URL?
+    private var configFile: ConfigFileStore?
+    private var configPersistenceError = ""
     private let shortcutMonitor = ShortcutFocusMonitor()
     private var shortcutSettings = ""
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -397,13 +429,7 @@ final class AppModel: ObservableObject {
             let root = try StartupGuard.dataDirectory()
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
                 attributes: [.posixPermissions: 0o700])
-            configURL = root.appendingPathComponent("rules.json")
-            if FileManager.default.fileExists(atPath: configURL!.path) {
-                config = try JSONDecoder().decode(FilterConfig.self, from: Data(contentsOf: configURL!))
-                if config.migratedFromAutomaticMode {
-                    startupNotice = "Настройки обновлены. Фильтр выключен — включи его вручную, когда будет нужно."
-                }
-            }
+            loadConfig(from: root.appendingPathComponent("rules.json"))
         } catch { errorText = "Не удалось прочитать настройки: \(error.localizedDescription)" }
         do {
             if let saved = try CredentialStore.load() {
@@ -498,17 +524,35 @@ final class AppModel: ObservableObject {
     func saveConfig() {
         if !config.aiEnabled { aiFailureNotice.resetOutage() }
         do {
-            let data = try JSONEncoder().encode(config)
-            if let configURL {
-                try data.write(to: configURL, options: .atomic)
-                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
-            }
-        } catch { errorText = "Не удалось сохранить правила: \(error.localizedDescription). Изменения применены только до перезапуска." }
+            try configFile?.save(config)
+            if errorText == configPersistenceError { errorText = "" }
+            configPersistenceError = ""
+        } catch {
+            configPersistenceError = "Не удалось сохранить правила: \(error.localizedDescription). Изменения применены только до перезапуска."
+            errorText = configPersistenceError
+        }
         // Apply privacy/pause changes even if persistence fails (for example, disk full).
         updateShortcutMonitoring()
         syncWorkerConfig()
         simulationAllowed = nil
         simulationReason = ""
+    }
+
+    func loadConfig(from url: URL) {
+        let file = ConfigFileStore(url: url)
+        configFile = file
+        do {
+            config = try file.load()
+            configPersistenceError = ""
+            if config.migratedFromAutomaticMode {
+                startupNotice = "Настройки обновлены. Фильтр выключен — включи его вручную, когда будет нужно."
+            }
+        } catch {
+            config = FilterConfig()
+            configPersistenceError = "Не удалось прочитать настройки. Фильтр выключен, исходный rules.json защищён от перезаписи. Восстанови файл или сохрани его копию и убери из папки данных, затем перезапусти TGFocus."
+            startupNotice = configPersistenceError
+            errorText = configPersistenceError
+        }
     }
 
     private func syncWorkerConfig() {
@@ -601,7 +645,7 @@ final class AppModel: ObservableObject {
             if let name = object["name"] as? String { accountName = name }
             busy = state == "connecting"
             if state != "qr" { qrImage = nil }
-            if connected { errorText = "" }
+            if connected { errorText = configPersistenceError }
         case "qr":
             if let url = object["url"] as? String {
                 qrImage = QRRenderer.image(for: url)

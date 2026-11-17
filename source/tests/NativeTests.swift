@@ -47,6 +47,27 @@ struct NativeTests {
         let offIcon = FilterPresentation.icon(enabled: false)
         precondition(onIcon.isTemplate && offIcon.isTemplate && onIcon.tiffRepresentation != offIcon.tiffRepresentation)
         let model = AppModel(startRuntime: false)
+        let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: configDirectory) }
+        let configURL = configDirectory.appendingPathComponent("rules.json")
+        let originalConfig = Data("{\"people\":[{\"id\":\"42\",\"name\":\"VIP\"}],broken".utf8)
+        try originalConfig.write(to: configURL)
+        let damagedModel = AppModel(startRuntime: false)
+        damagedModel.loadConfig(from: configURL)
+        damagedModel.receive(["type": "ready"])
+        damagedModel.receive(["type": "state", "state": "connected"])
+        damagedModel.setFilterEnabled(true)
+        let preservedConfig = try Data(contentsOf: configURL)
+        precondition(preservedConfig == originalConfig)
+        precondition(!damagedModel.startupNotice.isEmpty && !damagedModel.errorText.isEmpty)
+        try Data("{\"people\":[{\"id\":\"42\",\"name\":\"VIP\"}]}".utf8).write(to: configURL)
+        let repairedStore = ConfigFileStore(url: configURL)
+        var repairedConfig = try repairedStore.load()
+        repairedConfig.enabled = true
+        try repairedStore.save(repairedConfig)
+        let persistedConfig = try repairedStore.load()
+        precondition(persistedConfig.people.first?.id == "42")
         model.filterBinding.wrappedValue = false // The settings control uses this binding.
         precondition(!model.config.enabled && !model.effectiveFilterEnabled && model.filterTitle == "Фильтр выключен")
         model.setFilterEnabled(true) // The menu uses the same setter.
